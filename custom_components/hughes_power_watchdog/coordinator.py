@@ -11,10 +11,13 @@ from typing import Any, Callable
 
 from bleak import BleakClient
 from bleak.exc import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -140,7 +143,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name=self.device_name,
             manufacturer="Hughes Autoformers",
             model="Power Watchdog",
-            connections={(bluetooth.CONNECTION_BLUETOOTH, self.address)},
+            connections={(dr.CONNECTION_BLUETOOTH, self.address)},
         )
 
     async def _ensure_connected(self) -> BleakClient:
@@ -181,8 +184,8 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         CONNECTION_MAX_ATTEMPTS,
                     )
 
-                    # Create and connect client
-                    self._client = BleakClient(ble_device)
+                    # Create and connect client with service cache
+                    self._client = BleakClientWithServiceCache(ble_device)
                     await self._client.connect()
 
                     # Success - reduce delay for next time
