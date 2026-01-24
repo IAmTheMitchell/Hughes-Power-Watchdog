@@ -83,7 +83,11 @@ class HughesPowerWatchdogSensor(CoordinatorEntity[HughesPowerWatchdogCoordinator
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and self._sensor_type in self.coordinator.data
+        return (
+            self.coordinator.monitoring_enabled
+            and self.coordinator.last_update_success
+            and self._sensor_type in self.coordinator.data
+        )
 
 
 class HughesPowerWatchdogVoltageSensor(HughesPowerWatchdogSensor):

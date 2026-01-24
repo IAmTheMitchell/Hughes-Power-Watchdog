@@ -120,6 +120,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._connect_delay: float = 0.0
         self._read_delay: float = 0.0
 
+        # Monitoring state (for entity availability)
+        self._monitoring_enabled: bool = True
+
         # Start background tasks
         self._start_background_tasks()
 
@@ -145,6 +148,11 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             model="Power Watchdog",
             connections={(dr.CONNECTION_BLUETOOTH, self.address)},
         )
+
+    @property
+    def monitoring_enabled(self) -> bool:
+        """Return True if monitoring is enabled."""
+        return self._monitoring_enabled
 
     async def _ensure_connected(self) -> BleakClient:
         """Ensure we have an active BLE connection.
@@ -497,11 +505,15 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Called when the monitoring switch is turned on to restart
         the command worker and health monitor tasks.
         """
+        self._monitoring_enabled = True
         self._start_background_tasks()
         _LOGGER.debug("Monitoring started for %s", self.address)
 
     async def async_disconnect(self) -> None:
         """Disconnect from device and cleanup background tasks."""
+        # Mark monitoring as disabled (sensors become unavailable)
+        self._monitoring_enabled = False
+
         # Cancel background tasks
         if self._command_worker_task and not self._command_worker_task.done():
             self._command_worker_task.cancel()
