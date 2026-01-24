@@ -1,6 +1,7 @@
 # Hughes Power Watchdog - Home Assistant Integration
 
 **⚠️ INITIAL TESTING - TESTED USING A PWD50-EPD (GEN I).  IT SHOULD WORK ON OTHER MODELS BUT I CAN'T TEST **
+Please let me know via GitHub issues/feature requests if you have tested on other models.
 
 ---
 
@@ -29,7 +30,7 @@ This integration allows you to monitor your RV's power directly in Home Assistan
 - **Total Combined Power** (L1 + L2, watts)
 
 ### Controls (Future Development)
-- ** Not Implemented yet - Monitoring Switch** - Enable/disable BLE connection to allow other apps to connect
+- ** Not Fully Tested yet - Monitoring Switch - Enable/disable BLE connection to allow other apps to connect.  Switch turns monitoring on and off, have not yet verified if this allows the WatchDog App to connect.
 - ** Not Implemented yet - Reset Power Usage Total
 
 ## Installation
