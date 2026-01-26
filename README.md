@@ -1,19 +1,25 @@
-# Hughes Power Watchdog - Home Assistant Integration
+# Hughes Power Watchdog
 
-**⚠️ INITIAL TESTING - TESTED USING A PWD50-EPD (GEN I).  IT SHOULD WORK ON OTHER MODELS BUT I CAN'T TEST **
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/v/release/john-k-mcdowell/My-Hughes-Power-Watchdog?include_prereleases)](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/releases)
+[![License](https://img.shields.io/github/license/john-k-mcdowell/My-Hughes-Power-Watchdog)](LICENSE)
 
-Please let me know via GitHub issues/feature requests if you have tested on other models so they can be included in the README.
+A Home Assistant custom integration for **Hughes Power Watchdog Surge Protectors** with Bluetooth connectivity.
 
-Tested on:
-| Model     | Known Issues |
-| --------- | ------------ |
-| PWD50-EPD | None         |
+> **100% Local Control** - This integration communicates directly with the Power Watchdog over Bluetooth Low Energy (BLE). No cloud services, no internet connection required, no data leaves your home.
 
----
+## Tested Models
 
-A native Home Assistant integration for Hughes Power Watchdog Surge Protectors with Bluetooth connectivity.  This is based on the ESPhome version by spbrogan,  tango2590, and makifoxgirl.
+| Model      | Known Issues |
+| ---------- | ------------ |
+| PWD50-EPD  | None         |
+| PWD-VM-30A | None         |
+
+Please let me know via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues) if you have tested on other models so they can be included in the README.
 
 This integration allows you to monitor your RV's power directly in Home Assistant without needing a special configuration on an ESP32 device. It connects directly to your Hughes Power Watchdog via Bluetooth or ESP-32 Bluetooth Proxy.
+
+Based on the ESPHome implementation by spbrogan, tango2590, and makifoxgirl.
 
 ## Features
 
