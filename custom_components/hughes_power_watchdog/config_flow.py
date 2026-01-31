@@ -110,7 +110,13 @@ class HughesPowerWatchdogConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            address = user_input[CONF_ADDRESS].upper()
+            # Normalize MAC: remove separators, uppercase, reformat with colons
+            raw = user_input[CONF_ADDRESS].upper().replace(":", "").replace("-", "").replace(" ", "")
+            if len(raw) == 12 and all(c in "0123456789ABCDEF" for c in raw):
+                address = ":".join(raw[i:i+2] for i in range(0, 12, 2))
+            else:
+                address = user_input[CONF_ADDRESS].upper()  # Keep as-is for error handling
+
             await self.async_set_unique_id(address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
 
