@@ -4,7 +4,11 @@
 [![GitHub Release](https://img.shields.io/github/v/release/john-k-mcdowell/My-Hughes-Power-Watchdog?include_prereleases)](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/releases)
 [![License](https://img.shields.io/github/license/john-k-mcdowell/My-Hughes-Power-Watchdog)](LICENSE)
 
-A Home Assistant custom integration for **Hughes Power Watchdog Surge Protectors** with Bluetooth connectivity.
+A Home Assistant custom integration for **Hughes Power Watchdog Surge Protectors** with Bluetooth connectivity. 
+
+DOES NOT WORK WITH WiFi DEVICES.  
+
+Adding this support is on the roadmap but will require assistance from users who have WiFi versions to help reverse engineer the protocols.
 
 > **100% Local Control** - This integration communicates directly with the Power Watchdog over Bluetooth Low Energy (BLE). No cloud services, no internet connection required, no data leaves your home.
 
