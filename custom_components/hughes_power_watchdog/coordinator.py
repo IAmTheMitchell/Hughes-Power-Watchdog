@@ -22,6 +22,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    # Legacy protocol constants
     BYTE_CURRENT_END,
     BYTE_CURRENT_START,
     BYTE_ENERGY_END,
@@ -36,6 +37,25 @@ from .const import (
     BYTE_VOLTAGE_END,
     BYTE_VOLTAGE_START,
     CHARACTERISTIC_UUID_TX,
+    HEADER_BYTES,
+    LINE_1_ID,
+    LINE_2_ID,
+    TOTAL_DATA_SIZE,
+    # WD_V5 protocol constants
+    DEVICE_NAME_PREFIXES_V5,
+    WD_V5_BYTE_CURRENT_END,
+    WD_V5_BYTE_CURRENT_START,
+    WD_V5_BYTE_MSG_TYPE,
+    WD_V5_BYTE_POWER_END,
+    WD_V5_BYTE_POWER_START,
+    WD_V5_BYTE_VOLTAGE_END,
+    WD_V5_BYTE_VOLTAGE_START,
+    WD_V5_CHARACTERISTIC_UUID,
+    WD_V5_HEADER,
+    WD_V5_INIT_COMMAND,
+    WD_V5_MIN_DATA_PACKET_SIZE,
+    WD_V5_MSG_TYPE_DATA,
+    # Shared constants
     CONNECTION_DELAY_REDUCTION,
     CONNECTION_IDLE_TIMEOUT,
     CONNECTION_MAX_ATTEMPTS,
@@ -44,9 +64,6 @@ from .const import (
     DATA_CONVERSION_FACTOR,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    HEADER_BYTES,
-    LINE_1_ID,
-    LINE_2_ID,
     SENSOR_COMBINED_POWER,
     SENSOR_CURRENT_L1,
     SENSOR_CURRENT_L2,
@@ -57,7 +74,6 @@ from .const import (
     SENSOR_TOTAL_POWER,
     SENSOR_VOLTAGE_L1,
     SENSOR_VOLTAGE_L2,
-    TOTAL_DATA_SIZE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -93,6 +109,16 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_name: str = config_entry.title
         self.config_entry = config_entry
 
+        # Detect protocol based on device name
+        self._is_v5_protocol = self._detect_v5_protocol(self.device_name)
+        protocol_name = "WD_V5" if self._is_v5_protocol else "Legacy"
+        _LOGGER.info(
+            "[%s] Detected %s protocol for device %s",
+            self.device_name,
+            protocol_name,
+            self.address,
+        )
+
         super().__init__(
             hass,
             _LOGGER,
@@ -105,6 +131,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._line_1_data: dict[str, float] = {}
         self._line_2_data: dict[str, float] = {}
         self._error_code: int = 0
+
+        # WD_V5 specific: track if initialization command has been sent
+        self._v5_initialized: bool = False
 
         # Connection management
         self._client: BleakClient | None = None
@@ -126,6 +155,18 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Start background tasks
         self._start_background_tasks()
 
+    @staticmethod
+    def _detect_v5_protocol(device_name: str) -> bool:
+        """Detect if device uses WD_V5 protocol based on name.
+
+        Args:
+            device_name: The device name from Bluetooth advertisement.
+
+        Returns:
+            True if device uses WD_V5 protocol, False for legacy protocol.
+        """
+        return any(device_name.startswith(prefix) for prefix in DEVICE_NAME_PREFIXES_V5)
+
     def _start_background_tasks(self) -> None:
         """Start background worker tasks."""
         if self._command_worker_task is None or self._command_worker_task.done():
@@ -141,11 +182,12 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information for the Hughes Power Watchdog."""
+        model = "Power Watchdog V5" if self._is_v5_protocol else "Power Watchdog"
         return DeviceInfo(
             identifiers={(DOMAIN, self.address)},
             name=self.device_name,
             manufacturer="Hughes Autoformers",
-            model="Power Watchdog",
+            model=model,
             connections={(dr.CONNECTION_BLUETOOTH, self.address)},
         )
 
@@ -242,6 +284,8 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.debug("Error disconnecting from %s: %s", self.address, err)
                 finally:
                     self._client = None
+                    # Reset V5 initialization flag so we send init on reconnect
+                    self._v5_initialized = False
 
     async def _monitor_connection_health(self) -> None:
         """Monitor connection health and disconnect idle connections.
@@ -338,16 +382,30 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         Subscribes to TX characteristic to receive device data.
         Called after commands to provide responsive UI feedback.
+        Routes to appropriate protocol handler based on device type.
         """
+        if self._is_v5_protocol:
+            await self._request_device_status_v5()
+        else:
+            await self._request_device_status_legacy()
+
+    async def _request_device_status_legacy(self) -> None:
+        """Request status from legacy PMD/PWS/PMS device."""
         try:
             client = await self._ensure_connected()
 
             # Clear buffer for new data
             self._data_buffer = bytearray()
 
+            _LOGGER.debug(
+                "[%s] Legacy: Subscribing to notifications on %s",
+                self.device_name,
+                CHARACTERISTIC_UUID_TX,
+            )
+
             # Subscribe to notifications
             await client.start_notify(
-                CHARACTERISTIC_UUID_TX, self._notification_handler
+                CHARACTERISTIC_UUID_TX, self._notification_handler_legacy
             )
 
             # Wait for device to send data (two 20-byte chunks)
@@ -360,7 +418,76 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_activity_time = time.time()
 
         except BleakError as err:
-            _LOGGER.debug("Error requesting device status: %s", err)
+            _LOGGER.debug("[%s] Legacy: Error requesting device status: %s", self.device_name, err)
+
+    async def _request_device_status_v5(self) -> None:
+        """Request status from WD_V5 device.
+
+        WD_V5 protocol requires:
+        1. Send initialization command on first connection
+        2. Subscribe to notifications on bidirectional characteristic
+        3. Device streams data continuously after init
+        """
+        try:
+            client = await self._ensure_connected()
+
+            # Clear buffer for new data
+            self._data_buffer = bytearray()
+
+            # Send initialization command if not yet done
+            if not self._v5_initialized:
+                _LOGGER.debug(
+                    "[%s] WD_V5: Sending init command: %s",
+                    self.device_name,
+                    WD_V5_INIT_COMMAND.hex(),
+                )
+                try:
+                    await client.write_gatt_char(
+                        WD_V5_CHARACTERISTIC_UUID,
+                        WD_V5_INIT_COMMAND,
+                        response=False,
+                    )
+                    self._v5_initialized = True
+                    _LOGGER.info(
+                        "[%s] WD_V5: Initialization command sent successfully",
+                        self.device_name,
+                    )
+                except BleakError as err:
+                    _LOGGER.error(
+                        "[%s] WD_V5: Failed to send init command: %s",
+                        self.device_name,
+                        err,
+                    )
+                    raise
+
+            _LOGGER.debug(
+                "[%s] WD_V5: Subscribing to notifications on %s",
+                self.device_name,
+                WD_V5_CHARACTERISTIC_UUID,
+            )
+
+            # Subscribe to notifications
+            await client.start_notify(
+                WD_V5_CHARACTERISTIC_UUID, self._notification_handler_v5
+            )
+
+            # Wait for device to send data
+            await asyncio.sleep(DATA_COLLECTION_TIMEOUT)
+
+            # Unsubscribe from notifications
+            await client.stop_notify(WD_V5_CHARACTERISTIC_UUID)
+
+            # Update last activity time
+            self._last_activity_time = time.time()
+
+        except BleakError as err:
+            _LOGGER.error(
+                "[%s] WD_V5: Error requesting device status: %s",
+                self.device_name,
+                err,
+            )
+            # Reset initialization flag on connection error so we retry init
+            self._v5_initialized = False
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Hughes Power Watchdog device.
@@ -391,15 +518,19 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
-    def _notification_handler(self, sender: int, data: bytearray) -> None:
-        """Handle BLE notification data from Hughes device.
+    # =========================================================================
+    # LEGACY PROTOCOL HANDLERS (PMD/PWS/PMS)
+    # =========================================================================
+
+    def _notification_handler_legacy(self, sender: int, data: bytearray) -> None:
+        """Handle BLE notification data from legacy Hughes device.
 
         Device sends 40 bytes total in two 20-byte chunks.
         Chunk 1: Header + voltage/current/power/energy/error
         Chunk 2: Line identifier (Line 1 or Line 2)
         """
         _LOGGER.debug(
-            "[%s] Received %d bytes from characteristic %s: %s",
+            "[%s] Legacy: Received %d bytes from characteristic %s: %s",
             self.device_name,
             len(data),
             sender,
@@ -411,15 +542,15 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Check if we have a complete 40-byte packet
         if len(self._data_buffer) >= TOTAL_DATA_SIZE:
-            self._parse_data_packet()
+            self._parse_data_packet_legacy()
             # Clear buffer after parsing
             self._data_buffer = bytearray()
 
-    def _parse_data_packet(self) -> None:
-        """Parse complete 40-byte data packet."""
+    def _parse_data_packet_legacy(self) -> None:
+        """Parse complete 40-byte legacy data packet."""
         if len(self._data_buffer) < TOTAL_DATA_SIZE:
             _LOGGER.warning(
-                "[%s] Incomplete data packet: %d bytes",
+                "[%s] Legacy: Incomplete data packet: %d bytes",
                 self.device_name,
                 len(self._data_buffer),
             )
@@ -427,7 +558,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Log complete raw buffer for debugging
         _LOGGER.debug(
-            "[%s] Complete buffer (%d bytes): %s",
+            "[%s] Legacy: Complete buffer (%d bytes): %s",
             self.device_name,
             len(self._data_buffer),
             bytes(self._data_buffer).hex(),
@@ -436,14 +567,14 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Verify header - device sends multiple packet types, only process data packets
         header = bytes(self._data_buffer[BYTE_HEADER_START:BYTE_HEADER_END])
         _LOGGER.debug(
-            "[%s] Header bytes: %s (expected: %s)",
+            "[%s] Legacy: Header bytes: %s (expected: %s)",
             self.device_name,
             header.hex(),
             HEADER_BYTES.hex(),
         )
         if header != HEADER_BYTES:
             _LOGGER.debug(
-                "[%s] Skipping non-data packet with header: %s",
+                "[%s] Legacy: Skipping non-data packet with header: %s",
                 self.device_name,
                 header.hex(),
             )
@@ -471,7 +602,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Log parsed values for debugging
         _LOGGER.debug(
-            "[%s] Parsed values - Voltage: %.2f V, Current: %.2f A, Power: %.2f W, Energy: %.2f kWh, Error: %d",
+            "[%s] Legacy: Parsed - V=%.2fV I=%.2fA P=%.2fW E=%.2fkWh Err=%d",
             self.device_name,
             voltage,
             current,
@@ -483,7 +614,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Identify which line this data is for (bytes 37-39 in chunk 2)
         line_id = bytes(self._data_buffer[BYTE_LINE_ID_START:BYTE_LINE_ID_END])
         _LOGGER.debug(
-            "[%s] Line ID bytes: %s (Line1=%s, Line2=%s)",
+            "[%s] Legacy: Line ID bytes: %s (Line1=%s, Line2=%s)",
             self.device_name,
             line_id.hex(),
             LINE_1_ID.hex(),
@@ -497,7 +628,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "power": power,
                 "energy": energy,
             }
-            _LOGGER.debug("Line 1 data: %s", self._line_1_data)
+            _LOGGER.debug("[%s] Legacy: Line 1 data: %s", self.device_name, self._line_1_data)
         elif line_id == LINE_2_ID:
             self._line_2_data = {
                 "voltage": voltage,
@@ -505,9 +636,162 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "power": power,
                 "energy": energy,
             }
-            _LOGGER.debug("Line 2 data: %s", self._line_2_data)
+            _LOGGER.debug("[%s] Legacy: Line 2 data: %s", self.device_name, self._line_2_data)
         else:
-            _LOGGER.warning("Unknown line identifier: %s", line_id)
+            _LOGGER.warning("[%s] Legacy: Unknown line identifier: %s", self.device_name, line_id.hex())
+
+    # =========================================================================
+    # WD_V5 PROTOCOL HANDLERS
+    # =========================================================================
+
+    def _notification_handler_v5(self, sender: int, data: bytearray) -> None:
+        """Handle BLE notification data from WD_V5 device.
+
+        WD_V5 sends variable-length packets with $yw@ header and q! end marker.
+        Each notification is typically a complete packet.
+        """
+        _LOGGER.debug(
+            "[%s] WD_V5: Received %d bytes: %s",
+            self.device_name,
+            len(data),
+            data.hex(),
+        )
+
+        # WD_V5 typically sends complete packets per notification
+        # Parse immediately if we have the header
+        if len(data) >= 4 and data[0:4] == WD_V5_HEADER:
+            self._parse_data_packet_v5(data)
+        else:
+            # Buffer data if it doesn't start with header (continuation)
+            self._data_buffer.extend(data)
+            _LOGGER.debug(
+                "[%s] WD_V5: Buffered data, total %d bytes",
+                self.device_name,
+                len(self._data_buffer),
+            )
+
+    def _parse_data_packet_v5(self, data: bytes | bytearray) -> None:
+        """Parse WD_V5 data packet.
+
+        Packet structure (45 bytes for full data packet):
+        - Bytes 0-3: Header "$yw@" (0x24797740)
+        - Byte 4: Unknown (0x01)
+        - Byte 5: Sequence number
+        - Byte 6: Message type (0x01=data, 0x02=status, 0x06=control)
+        - Bytes 7-8: Unknown (0x0022)
+        - Bytes 9-12: Voltage (BE int32 / 10000)
+        - Bytes 13-16: Current (BE int32 / 10000)
+        - Bytes 17-20: Power (BE int32 / 10000)
+        - Bytes 21+: Additional fields (energy, frequency, etc.)
+        - Last 2 bytes: End marker "q!" (0x7121)
+        """
+        # Verify minimum packet size
+        if len(data) < WD_V5_MIN_DATA_PACKET_SIZE:
+            _LOGGER.debug(
+                "[%s] WD_V5: Packet too short (%d bytes), need at least %d",
+                self.device_name,
+                len(data),
+                WD_V5_MIN_DATA_PACKET_SIZE,
+            )
+            return
+
+        # Verify header
+        header = bytes(data[0:4])
+        if header != WD_V5_HEADER:
+            _LOGGER.debug(
+                "[%s] WD_V5: Invalid header: %s (expected %s)",
+                self.device_name,
+                header.hex(),
+                WD_V5_HEADER.hex(),
+            )
+            return
+
+        # Get message type
+        msg_type = data[WD_V5_BYTE_MSG_TYPE]
+        sequence = data[5]
+
+        _LOGGER.debug(
+            "[%s] WD_V5: Packet type=0x%02x seq=%d len=%d",
+            self.device_name,
+            msg_type,
+            sequence,
+            len(data),
+        )
+
+        # Only parse data packets (type 0x01)
+        if msg_type != WD_V5_MSG_TYPE_DATA:
+            _LOGGER.debug(
+                "[%s] WD_V5: Skipping non-data packet (type 0x%02x): %s",
+                self.device_name,
+                msg_type,
+                data.hex(),
+            )
+            return
+
+        try:
+            # Extract voltage (big-endian int32 ÷ 10000)
+            voltage_bytes = data[WD_V5_BYTE_VOLTAGE_START:WD_V5_BYTE_VOLTAGE_END]
+            voltage_raw = struct.unpack(">I", voltage_bytes)[0]
+            voltage = voltage_raw / DATA_CONVERSION_FACTOR
+
+            # Extract current (big-endian int32 ÷ 10000)
+            current_bytes = data[WD_V5_BYTE_CURRENT_START:WD_V5_BYTE_CURRENT_END]
+            current_raw = struct.unpack(">I", current_bytes)[0]
+            current = current_raw / DATA_CONVERSION_FACTOR
+
+            # Extract power (big-endian int32 ÷ 10000)
+            power_bytes = data[WD_V5_BYTE_POWER_START:WD_V5_BYTE_POWER_END]
+            power_raw = struct.unpack(">I", power_bytes)[0]
+            power = power_raw / DATA_CONVERSION_FACTOR
+
+            # Log parsed values with raw hex for debugging
+            _LOGGER.debug(
+                "[%s] WD_V5: Raw values - V=%s(%d) I=%s(%d) P=%s(%d)",
+                self.device_name,
+                voltage_bytes.hex(),
+                voltage_raw,
+                current_bytes.hex(),
+                current_raw,
+                power_bytes.hex(),
+                power_raw,
+            )
+
+            _LOGGER.info(
+                "[%s] WD_V5: Parsed - V=%.2fV I=%.2fA P=%.2fW",
+                self.device_name,
+                voltage,
+                current,
+                power,
+            )
+
+            # WD_V5 appears to be single-line (30A) device
+            # Store as Line 1 data
+            self._line_1_data = {
+                "voltage": voltage,
+                "current": current,
+                "power": power,
+                "energy": 0,  # Not yet decoded for V5
+            }
+
+            # Error code not yet decoded for V5
+            self._error_code = 0
+
+            _LOGGER.debug("[%s] WD_V5: Line 1 data: %s", self.device_name, self._line_1_data)
+
+        except struct.error as err:
+            _LOGGER.error(
+                "[%s] WD_V5: Parse error at struct unpack: %s (data: %s)",
+                self.device_name,
+                err,
+                data.hex(),
+            )
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.error(
+                "[%s] WD_V5: Unexpected parse error: %s (data: %s)",
+                self.device_name,
+                err,
+                data.hex(),
+            )
 
     def _build_data_dict(self) -> dict[str, Any]:
         """Build data dictionary for entities."""

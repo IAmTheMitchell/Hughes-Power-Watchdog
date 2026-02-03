@@ -14,10 +14,11 @@ Adding this support is on the roadmap but will require assistance from users who
 
 ## Tested Models
 
-| Model      | Known Issues |
-| ---------- | ------------ |
-| PWD50-EPD  | None         |
-| PWD-VM-30A | None         |
+| Model      | Protocol | Known Issues |
+| ---------- | -------- | ------------ |
+| PWD50-EPD  | Legacy   | None         |
+| PWD-VM-30A | Legacy   | None         |
+| WD_V5_*    | V5 (Beta)| Experimental - needs testing |
 
 Please let me know via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues) if you have tested on other models so they can be included in the README.
 
@@ -30,6 +31,7 @@ Based on the ESPHome implementation by spbrogan, tango2590, and makifoxgirl.
 ### Supported Models
 - Hughes Power Watchdog (PWD) - any model with Bluetooth
 - Hughes Power Watch (PWS) - any model with Bluetooth (not tested yet)
+- Hughes Power Watchdog V5 (WD_V5_*) - **Experimental** (v0.5.0+)
 
 ### Available Sensors
 - **Line 1 Voltage** (volts)
@@ -90,11 +92,38 @@ If your device is not auto-discovered but is powered on and within Bluetooth ran
 
 > **Important:** If you successfully configure your device using manual MAC entry, please [open a GitHub issue](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues) and include your device model name. This helps us add it to the auto-discovery list for future users.
 
+## WD_V5 Support (Experimental)
+
+Starting with v0.5.0, this integration includes **experimental** support for the newer WD_V5 devices (device names starting with `WD_V5_`). These devices use a different Bluetooth protocol than the legacy PMD/PWS models.
+
+**WD_V5 Status:**
+- Voltage, Current, Power readings - Should work
+- Energy (kWh) - Not yet implemented
+- Error codes - Not yet implemented
+
+**If you have a WD_V5 device**, please help us test by:
+1. Enabling debug logging (see below)
+2. Checking if the readings match your Hughes mobile app
+3. Reporting any issues via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues)
+
+### Debug Logging for WD_V5
+
+Add this to your `configuration.yaml` to enable debug logging:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.hughes_power_watchdog: debug
+```
+
+Then check your Home Assistant logs for entries prefixed with `[WD_V5]`.
+
 ## Requirements
 
 - Home Assistant 2023.1.0 or newer
 - Bluetooth adapter/proxy in range of your Hughes Power Watchdog
-- Hughes Power Watchdog with Bluetooth (PMD or PWS model)
+- Hughes Power Watchdog with Bluetooth (PMD, PWS, or WD_V5 model)
 
 ## Troubleshooting
 
