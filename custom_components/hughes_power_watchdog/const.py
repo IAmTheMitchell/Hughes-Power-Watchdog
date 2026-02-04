@@ -13,10 +13,10 @@ CONF_MAC_ADDRESS = "mac_address"
 
 # Device name prefixes that we look for
 # Legacy devices: PMD, PWS, PMS (use old protocol)
-# V5 devices: WD_V5 (use new protocol)
+# Modern V5 devices: WD_V5 (use new protocol)
 DEVICE_NAME_PREFIXES = ["PMD", "PWS", "PMS", "WD_V5"]
 DEVICE_NAME_PREFIXES_LEGACY = ["PMD", "PWS", "PMS"]
-DEVICE_NAME_PREFIXES_V5 = ["WD_V5"]
+DEVICE_NAME_PREFIXES_MODERN_V5 = ["WD_V5"]
 
 # Update interval
 DEFAULT_SCAN_INTERVAL = 30  # seconds
@@ -33,60 +33,65 @@ DATA_COLLECTION_TIMEOUT = 3  # seconds - wait for device to send data chunks
 # =============================================================================
 # BLE Service and Characteristic UUIDs (from ESPHome implementation)
 # Source: https://github.com/spbrogan/esphome/tree/PolledSensor/esphome/components/hughes_power_watchdog
-SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
-CHARACTERISTIC_UUID_TX = "0000ffe2-0000-1000-8000-00805f9b34fb"  # Device transmits data
-CHARACTERISTIC_UUID_RX = "0000fff5-0000-1000-8000-00805f9b34fb"  # Device receives commands
+LEGACY_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
+LEGACY_CHARACTERISTIC_UUID_TX = "0000ffe2-0000-1000-8000-00805f9b34fb"  # Device transmits data
+LEGACY_CHARACTERISTIC_UUID_RX = "0000fff5-0000-1000-8000-00805f9b34fb"  # Device receives commands
+
+# Backward-compatible aliases
+SERVICE_UUID = LEGACY_SERVICE_UUID
+CHARACTERISTIC_UUID_TX = LEGACY_CHARACTERISTIC_UUID_TX
+CHARACTERISTIC_UUID_RX = LEGACY_CHARACTERISTIC_UUID_RX
 
 # =============================================================================
-# WD_V5 PROTOCOL (WD_V5_* devices)
+# MODERN V5 PROTOCOL (WD_V5_* devices)
 # =============================================================================
 # Reverse engineered from Bluetooth captures - see bt_logs/WD_V5_PROTOCOL.md
-WD_V5_SERVICE_UUID = "000000ff-0000-1000-8000-00805f9b34fb"
-WD_V5_CHARACTERISTIC_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"  # Bidirectional
+MODERN_V5_SERVICE_UUID = "000000ff-0000-1000-8000-00805f9b34fb"
+MODERN_V5_CHARACTERISTIC_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"  # Bidirectional
 
-# WD_V5 Protocol framing
-WD_V5_HEADER = b"$yw@"  # 0x24797740
-WD_V5_END_MARKER = b"q!"  # 0x7121
-WD_V5_INIT_COMMAND = b"!%!%,protocol,open,"
+# Modern V5 Protocol framing
+MODERN_V5_HEADER = b"$yw@"  # 0x24797740
+MODERN_V5_END_MARKER = b"q!"  # 0x7121
+MODERN_V5_INIT_COMMAND = b"!%!%,protocol,open,"
 
-# WD_V5 Message types (byte 6 in packet)
-WD_V5_MSG_TYPE_DATA = 0x01  # Power data packet
-WD_V5_MSG_TYPE_STATUS = 0x02  # Status/info packet
-WD_V5_MSG_TYPE_CONTROL = 0x06  # Control/ack packet
+# Modern V5 Message types (byte 6 in packet)
+MODERN_V5_MSG_TYPE_DATA = 0x01  # Power data packet
+MODERN_V5_MSG_TYPE_STATUS = 0x02  # Status/info packet
+MODERN_V5_MSG_TYPE_CONTROL = 0x06  # Control/ack packet
 
-# WD_V5 Data packet byte positions (45-byte data packet)
+# Modern V5 Data packet byte positions (45-byte data packet)
 # Line 1 data
-WD_V5_BYTE_HEADER_START = 0
-WD_V5_BYTE_HEADER_END = 4
-WD_V5_BYTE_SEQUENCE = 5
-WD_V5_BYTE_MSG_TYPE = 6
-WD_V5_BYTE_VOLTAGE_START = 9
-WD_V5_BYTE_VOLTAGE_END = 13
-WD_V5_BYTE_CURRENT_START = 13
-WD_V5_BYTE_CURRENT_END = 17
-WD_V5_BYTE_POWER_START = 17
-WD_V5_BYTE_POWER_END = 21
-WD_V5_BYTE_ENERGY_START = 21
-WD_V5_BYTE_ENERGY_END = 25
+MODERN_V5_BYTE_HEADER_START = 0
+MODERN_V5_BYTE_HEADER_END = 4
+MODERN_V5_BYTE_SEQUENCE = 5
+MODERN_V5_BYTE_MSG_TYPE = 6
+MODERN_V5_BYTE_VOLTAGE_START = 9
+MODERN_V5_BYTE_VOLTAGE_END = 13
+MODERN_V5_BYTE_CURRENT_START = 13
+MODERN_V5_BYTE_CURRENT_END = 17
+MODERN_V5_BYTE_POWER_START = 17
+MODERN_V5_BYTE_POWER_END = 21
+MODERN_V5_BYTE_ENERGY_START = 21
+MODERN_V5_BYTE_ENERGY_END = 25
 
 # Line 2 data (speculative - for dual-phase V5 devices if they exist)
 # Assuming same format as Line 1, starting at byte 25
-WD_V5_BYTE_L2_VOLTAGE_START = 25
-WD_V5_BYTE_L2_VOLTAGE_END = 29
-WD_V5_BYTE_L2_CURRENT_START = 29
-WD_V5_BYTE_L2_CURRENT_END = 33
-WD_V5_BYTE_L2_POWER_START = 33
-WD_V5_BYTE_L2_POWER_END = 37
+MODERN_V5_BYTE_L2_VOLTAGE_START = 25
+MODERN_V5_BYTE_L2_VOLTAGE_END = 29
+MODERN_V5_BYTE_L2_CURRENT_START = 29
+MODERN_V5_BYTE_L2_CURRENT_END = 33
+MODERN_V5_BYTE_L2_POWER_START = 33
+MODERN_V5_BYTE_L2_POWER_END = 37
 
-# WD_V5 minimum packet sizes
-WD_V5_MIN_DATA_PACKET_SIZE = 21  # Minimum for L1 V/I/P extraction
-WD_V5_MIN_ENERGY_PACKET_SIZE = 25  # Minimum for L1 V/I/P/E extraction
-WD_V5_MIN_L2_PACKET_SIZE = 37  # Minimum for L2 V/I/P extraction (speculative)
-WD_V5_FULL_DATA_PACKET_SIZE = 45  # Full packet with all fields
+# Modern V5 minimum packet sizes
+MODERN_V5_MIN_DATA_PACKET_SIZE = 21  # Minimum for L1 V/I/P extraction
+MODERN_V5_MIN_ENERGY_PACKET_SIZE = 25  # Minimum for L1 V/I/P/E extraction
+MODERN_V5_MIN_L2_PACKET_SIZE = 37  # Minimum for L2 V/I/P extraction (speculative)
+MODERN_V5_FULL_DATA_PACKET_SIZE = 45  # Full packet with all fields
 
 # Voltage validation range (for detecting valid Line 2 data)
-WD_V5_VOLTAGE_MIN = 90.0  # Minimum reasonable voltage (V)
-WD_V5_VOLTAGE_MAX = 145.0  # Maximum reasonable voltage (V)
+MODERN_V5_VOLTAGE_MIN = 90.0  # Minimum reasonable voltage (V)
+MODERN_V5_VOLTAGE_MAX = 145.0  # Maximum reasonable voltage (V)
 
 # Legacy Data Protocol Constants
 # Device sends 40 bytes total in two 20-byte chunks

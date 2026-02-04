@@ -36,10 +36,13 @@ See [WD_V5_PROTOCOL.md](../bt_logs/WD_V5_PROTOCOL.md) for full protocol document
   - Log any packet parsing errors with full context
 
 ### Phase 3: Testing & Refinement
-- [ ] Test with actual WD_V5 device
-- [ ] Verify voltage/current/power readings match app
-- [ ] Investigate unknown fields (energy, frequency, error codes)
-- [ ] Update sensors for WD_V5 (single line only, possibly different available sensors)
+- [x] Test with actual WD_V5 device
+- [x] Verify voltage/current/power readings match app
+- [x] Investigate unknown fields (energy, frequency, error codes)
+  - Energy (kWh) decoded from bytes 21-24 in v0.5.0-beta.2
+  - Frequency and error codes still TBD
+- [x] Update sensors for WD_V5 (single line only, possibly different available sensors)
+  - Line 2 entities now skipped for V5 devices (v0.5.0-beta.3)
 
 ### Phase 4: Documentation
 - [x] Update README with WD_V5 support info
@@ -85,6 +88,80 @@ Key debug output to capture:
 - `[WD_V5] Parse error at offset {n}: {error}` - Parsing failures
 
 This will allow remote troubleshooting without physical access to the device.
+
+## Changes Summary (v0.5.0-beta.4)
+
+### Files Modified
+
+**const.py**
+- Added Line 2 byte position constants for V5 protocol (speculative):
+  - `WD_V5_BYTE_L2_VOLTAGE_START/END`, `WD_V5_BYTE_L2_CURRENT_START/END`, `WD_V5_BYTE_L2_POWER_START/END`
+  - `WD_V5_MIN_L2_PACKET_SIZE = 37`
+- Added voltage validation range: `WD_V5_VOLTAGE_MIN = 90.0`, `WD_V5_VOLTAGE_MAX = 145.0`
+
+**coordinator.py**
+- Updated `_parse_data_packet_v5()` to try decoding Line 2 from bytes 25-36
+- Only populates `_line_2_data` if decoded voltage is in valid range (90-145V)
+- Logs whether device is detected as single-phase or dual-phase
+
+**sensor.py**
+- Reverted to create all entities for all devices
+- Line 2 sensors will show unavailable for single-phase devices
+
+**manifest.json** / **version.py**
+- Updated version to 0.5.0-beta.4
+
+### Approach
+- All entities created for all devices
+- V5 devices auto-detect single vs dual-phase from packet data
+- Single-phase devices: Line 2 sensors show unavailable
+- Dual-phase devices: Line 2 sensors populate if voltage in valid range
+
+---
+
+## Changes Summary (v0.5.0-beta.3) [Superseded by beta.4]
+
+### Files Modified
+
+**coordinator.py**
+- Added `is_v5_protocol` public property to expose protocol type
+
+**sensor.py**
+- Line 2 sensors (Voltage, Current, Power, Combined) now only created for legacy devices
+- WD_V5 devices get only Line 1 sensors, Energy, and Error sensors
+
+**manifest.json** / **version.py**
+- Updated version to 0.5.0-beta.3
+
+### Improvement
+- WD_V5 users no longer see confusing "Unknown" Line 2 entities
+
+---
+
+## Changes Summary (v0.5.0-beta.2)
+
+### Files Modified
+
+**const.py**
+- Added energy byte position constants:
+  - `WD_V5_BYTE_ENERGY_START = 21`
+  - `WD_V5_BYTE_ENERGY_END = 25`
+  - `WD_V5_MIN_ENERGY_PACKET_SIZE = 25`
+
+**coordinator.py**
+- Added imports for new energy constants
+- Updated `_parse_data_packet_v5()` to decode energy from bytes 21-24
+- Added debug logging for energy raw/decoded values
+- Updated info log message to include energy
+- Changed line 1 data `"energy"` from hardcoded 0 to decoded value
+
+**manifest.json** / **version.py**
+- Updated version to 0.5.0-beta.2
+
+### Bug Fixed
+- Cumulative Power Usage (kWh) now correctly shows energy reading for WD_V5 devices
+
+---
 
 ## Changes Summary (v0.5.0-beta.1)
 

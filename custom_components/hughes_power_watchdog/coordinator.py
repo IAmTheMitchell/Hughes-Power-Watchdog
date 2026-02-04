@@ -41,32 +41,35 @@ from .const import (
     LINE_1_ID,
     LINE_2_ID,
     TOTAL_DATA_SIZE,
-    # WD_V5 protocol constants
-    DEVICE_NAME_PREFIXES_V5,
-    WD_V5_BYTE_CURRENT_END,
-    WD_V5_BYTE_CURRENT_START,
-    WD_V5_BYTE_ENERGY_END,
-    WD_V5_BYTE_ENERGY_START,
-    WD_V5_BYTE_L2_CURRENT_END,
-    WD_V5_BYTE_L2_CURRENT_START,
-    WD_V5_BYTE_L2_POWER_END,
-    WD_V5_BYTE_L2_POWER_START,
-    WD_V5_BYTE_L2_VOLTAGE_END,
-    WD_V5_BYTE_L2_VOLTAGE_START,
-    WD_V5_BYTE_MSG_TYPE,
-    WD_V5_BYTE_POWER_END,
-    WD_V5_BYTE_POWER_START,
-    WD_V5_BYTE_VOLTAGE_END,
-    WD_V5_BYTE_VOLTAGE_START,
-    WD_V5_CHARACTERISTIC_UUID,
-    WD_V5_HEADER,
-    WD_V5_INIT_COMMAND,
-    WD_V5_MIN_DATA_PACKET_SIZE,
-    WD_V5_MIN_ENERGY_PACKET_SIZE,
-    WD_V5_MIN_L2_PACKET_SIZE,
-    WD_V5_MSG_TYPE_DATA,
-    WD_V5_VOLTAGE_MAX,
-    WD_V5_VOLTAGE_MIN,
+    # Modern V5 protocol constants
+    DEVICE_NAME_PREFIXES_MODERN_V5,
+    MODERN_V5_SERVICE_UUID,
+    MODERN_V5_BYTE_CURRENT_END,
+    MODERN_V5_BYTE_CURRENT_START,
+    MODERN_V5_BYTE_ENERGY_END,
+    MODERN_V5_BYTE_ENERGY_START,
+    MODERN_V5_BYTE_L2_CURRENT_END,
+    MODERN_V5_BYTE_L2_CURRENT_START,
+    MODERN_V5_BYTE_L2_POWER_END,
+    MODERN_V5_BYTE_L2_POWER_START,
+    MODERN_V5_BYTE_L2_VOLTAGE_END,
+    MODERN_V5_BYTE_L2_VOLTAGE_START,
+    MODERN_V5_BYTE_MSG_TYPE,
+    MODERN_V5_BYTE_POWER_END,
+    MODERN_V5_BYTE_POWER_START,
+    MODERN_V5_BYTE_VOLTAGE_END,
+    MODERN_V5_BYTE_VOLTAGE_START,
+    MODERN_V5_CHARACTERISTIC_UUID,
+    MODERN_V5_HEADER,
+    MODERN_V5_INIT_COMMAND,
+    MODERN_V5_MIN_DATA_PACKET_SIZE,
+    MODERN_V5_MIN_ENERGY_PACKET_SIZE,
+    MODERN_V5_MIN_L2_PACKET_SIZE,
+    MODERN_V5_MSG_TYPE_DATA,
+    MODERN_V5_VOLTAGE_MAX,
+    MODERN_V5_VOLTAGE_MIN,
+    # Legacy protocol UUIDs
+    LEGACY_SERVICE_UUID,
     # Shared constants
     CONNECTION_DELAY_REDUCTION,
     CONNECTION_IDLE_TIMEOUT,
@@ -121,15 +124,25 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_name: str = config_entry.title
         self.config_entry = config_entry
 
-        # Detect protocol based on device name
-        self._is_v5_protocol = self._detect_v5_protocol(self.device_name)
-        protocol_name = "WD_V5" if self._is_v5_protocol else "Legacy"
-        _LOGGER.info(
-            "[%s] Detected %s protocol for device %s",
-            self.device_name,
-            protocol_name,
-            self.address,
-        )
+        # Protocol detection - initially based on device name, confirmed by service discovery
+        self._is_modern_v5_protocol: bool | None = None
+        self._protocol_detected_by_service: bool = False
+
+        # Initial guess based on device name
+        if self._detect_modern_v5_by_name(self.device_name):
+            self._is_modern_v5_protocol = True
+            _LOGGER.info(
+                "[%s] Detected modern_V5 protocol for device %s (by name)",
+                self.device_name,
+                self.address,
+            )
+        else:
+            self._is_modern_v5_protocol = False
+            _LOGGER.info(
+                "[%s] Detected legacy protocol for device %s (by name)",
+                self.device_name,
+                self.address,
+            )
 
         super().__init__(
             hass,
@@ -144,8 +157,8 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._line_2_data: dict[str, float] = {}
         self._error_code: int = 0
 
-        # WD_V5 specific: track if initialization command has been sent
-        self._v5_initialized: bool = False
+        # Modern V5 specific: track if initialization command has been sent
+        self._modern_v5_initialized: bool = False
 
         # Connection management
         self._client: BleakClient | None = None
@@ -168,16 +181,60 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._start_background_tasks()
 
     @staticmethod
-    def _detect_v5_protocol(device_name: str) -> bool:
-        """Detect if device uses WD_V5 protocol based on name.
+    def _detect_modern_v5_by_name(device_name: str) -> bool:
+        """Detect if device uses modern V5 protocol based on name.
 
         Args:
             device_name: The device name from Bluetooth advertisement.
 
         Returns:
-            True if device uses WD_V5 protocol, False for legacy protocol.
+            True if device name suggests modern V5 protocol, False otherwise.
         """
-        return any(device_name.startswith(prefix) for prefix in DEVICE_NAME_PREFIXES_V5)
+        return any(device_name.startswith(prefix) for prefix in DEVICE_NAME_PREFIXES_MODERN_V5)
+
+    async def _detect_protocol_by_service(self, client: BleakClient) -> bool:
+        """Detect protocol by probing BLE service UUIDs on the connected device.
+
+        Args:
+            client: Connected BleakClient instance.
+
+        Returns:
+            True if modern V5 protocol detected, False for legacy.
+        """
+        try:
+            services = client.services
+            service_uuids = [str(s.uuid).lower() for s in services]
+            _LOGGER.debug(
+                "[%s] Available services: %s", self.device_name, service_uuids
+            )
+
+            if MODERN_V5_SERVICE_UUID.lower() in service_uuids:
+                _LOGGER.info(
+                    "[%s] Detected modern_V5 protocol by service UUID",
+                    self.device_name,
+                )
+                return True
+
+            if LEGACY_SERVICE_UUID.lower() in service_uuids:
+                _LOGGER.info(
+                    "[%s] Detected legacy protocol by service UUID",
+                    self.device_name,
+                )
+                return False
+
+            _LOGGER.warning(
+                "[%s] Could not detect protocol by service, "
+                "using name-based detection",
+                self.device_name,
+            )
+            return self._detect_modern_v5_by_name(self.device_name)
+        except Exception as err:
+            _LOGGER.warning(
+                "[%s] Error detecting protocol by service: %s",
+                self.device_name,
+                err,
+            )
+            return self._detect_modern_v5_by_name(self.device_name)
 
     def _start_background_tasks(self) -> None:
         """Start background worker tasks."""
@@ -194,7 +251,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information for the Hughes Power Watchdog."""
-        model = "Power Watchdog V5" if self._is_v5_protocol else "Power Watchdog"
+        model = "Power Watchdog V5" if self._is_modern_v5_protocol else "Power Watchdog"
         return DeviceInfo(
             identifiers={(DOMAIN, self.address)},
             name=self.device_name,
@@ -209,9 +266,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._monitoring_enabled
 
     @property
-    def is_v5_protocol(self) -> bool:
-        """Return True if device uses the WD_V5 protocol."""
-        return self._is_v5_protocol
+    def is_modern_v5_protocol(self) -> bool:
+        """Return True if device uses the modern V5 protocol."""
+        return self._is_modern_v5_protocol
 
     async def _ensure_connected(self) -> BleakClient:
         """Ensure we have an active BLE connection.
@@ -302,7 +359,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 finally:
                     self._client = None
                     # Reset V5 initialization flag so we send init on reconnect
-                    self._v5_initialized = False
+                    self._modern_v5_initialized = False
 
     async def _monitor_connection_health(self) -> None:
         """Monitor connection health and disconnect idle connections.
@@ -400,9 +457,24 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Subscribes to TX characteristic to receive device data.
         Called after commands to provide responsive UI feedback.
         Routes to appropriate protocol handler based on device type.
+        On first connection, probes BLE services to confirm protocol.
         """
-        if self._is_v5_protocol:
-            await self._request_device_status_v5()
+        if not self._protocol_detected_by_service:
+            client = await self._ensure_connected()
+            detected = await self._detect_protocol_by_service(client)
+            if detected != self._is_modern_v5_protocol:
+                _LOGGER.warning(
+                    "[%s] Protocol mismatch: name suggested %s, "
+                    "service detected %s. Using service detection.",
+                    self.device_name,
+                    "modern_V5" if self._is_modern_v5_protocol else "legacy",
+                    "modern_V5" if detected else "legacy",
+                )
+                self._is_modern_v5_protocol = detected
+            self._protocol_detected_by_service = True
+
+        if self._is_modern_v5_protocol:
+            await self._request_device_status_modern_v5()
         else:
             await self._request_device_status_legacy()
 
@@ -437,7 +509,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except BleakError as err:
             _LOGGER.debug("[%s] Legacy: Error requesting device status: %s", self.device_name, err)
 
-    async def _request_device_status_v5(self) -> None:
+    async def _request_device_status_modern_v5(self) -> None:
         """Request status from WD_V5 device.
 
         WD_V5 protocol requires:
@@ -452,59 +524,59 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._data_buffer = bytearray()
 
             # Send initialization command if not yet done
-            if not self._v5_initialized:
+            if not self._modern_v5_initialized:
                 _LOGGER.debug(
-                    "[%s] WD_V5: Sending init command: %s",
+                    "[%s] modern_V5: Sending init command: %s",
                     self.device_name,
-                    WD_V5_INIT_COMMAND.hex(),
+                    MODERN_V5_INIT_COMMAND.hex(),
                 )
                 try:
                     await client.write_gatt_char(
-                        WD_V5_CHARACTERISTIC_UUID,
-                        WD_V5_INIT_COMMAND,
+                        MODERN_V5_CHARACTERISTIC_UUID,
+                        MODERN_V5_INIT_COMMAND,
                         response=False,
                     )
-                    self._v5_initialized = True
+                    self._modern_v5_initialized = True
                     _LOGGER.info(
-                        "[%s] WD_V5: Initialization command sent successfully",
+                        "[%s] modern_V5: Initialization command sent successfully",
                         self.device_name,
                     )
                 except BleakError as err:
                     _LOGGER.error(
-                        "[%s] WD_V5: Failed to send init command: %s",
+                        "[%s] modern_V5: Failed to send init command: %s",
                         self.device_name,
                         err,
                     )
                     raise
 
             _LOGGER.debug(
-                "[%s] WD_V5: Subscribing to notifications on %s",
+                "[%s] modern_V5: Subscribing to notifications on %s",
                 self.device_name,
-                WD_V5_CHARACTERISTIC_UUID,
+                MODERN_V5_CHARACTERISTIC_UUID,
             )
 
             # Subscribe to notifications
             await client.start_notify(
-                WD_V5_CHARACTERISTIC_UUID, self._notification_handler_v5
+                MODERN_V5_CHARACTERISTIC_UUID, self._notification_handler_modern_v5
             )
 
             # Wait for device to send data
             await asyncio.sleep(DATA_COLLECTION_TIMEOUT)
 
             # Unsubscribe from notifications
-            await client.stop_notify(WD_V5_CHARACTERISTIC_UUID)
+            await client.stop_notify(MODERN_V5_CHARACTERISTIC_UUID)
 
             # Update last activity time
             self._last_activity_time = time.time()
 
         except BleakError as err:
             _LOGGER.error(
-                "[%s] WD_V5: Error requesting device status: %s",
+                "[%s] modern_V5: Error requesting device status: %s",
                 self.device_name,
                 err,
             )
             # Reset initialization flag on connection error so we retry init
-            self._v5_initialized = False
+            self._modern_v5_initialized = False
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Hughes Power Watchdog device.
@@ -658,17 +730,17 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("[%s] Legacy: Unknown line identifier: %s", self.device_name, line_id.hex())
 
     # =========================================================================
-    # WD_V5 PROTOCOL HANDLERS
+    # MODERN V5 PROTOCOL HANDLERS
     # =========================================================================
 
-    def _notification_handler_v5(self, sender: int, data: bytearray) -> None:
+    def _notification_handler_modern_v5(self, sender: int, data: bytearray) -> None:
         """Handle BLE notification data from WD_V5 device.
 
         WD_V5 sends variable-length packets with $yw@ header and q! end marker.
         Each notification is typically a complete packet.
         """
         _LOGGER.debug(
-            "[%s] WD_V5: Received %d bytes: %s",
+            "[%s] modern_V5: Received %d bytes: %s",
             self.device_name,
             len(data),
             data.hex(),
@@ -676,18 +748,18 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # WD_V5 typically sends complete packets per notification
         # Parse immediately if we have the header
-        if len(data) >= 4 and data[0:4] == WD_V5_HEADER:
-            self._parse_data_packet_v5(data)
+        if len(data) >= 4 and data[0:4] == MODERN_V5_HEADER:
+            self._parse_data_packet_modern_v5(data)
         else:
             # Buffer data if it doesn't start with header (continuation)
             self._data_buffer.extend(data)
             _LOGGER.debug(
-                "[%s] WD_V5: Buffered data, total %d bytes",
+                "[%s] modern_V5: Buffered data, total %d bytes",
                 self.device_name,
                 len(self._data_buffer),
             )
 
-    def _parse_data_packet_v5(self, data: bytes | bytearray) -> None:
+    def _parse_data_packet_modern_v5(self, data: bytes | bytearray) -> None:
         """Parse WD_V5 data packet.
 
         Packet structure (45 bytes for full data packet):
@@ -703,32 +775,32 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         - Last 2 bytes: End marker "q!" (0x7121)
         """
         # Verify minimum packet size
-        if len(data) < WD_V5_MIN_DATA_PACKET_SIZE:
+        if len(data) < MODERN_V5_MIN_DATA_PACKET_SIZE:
             _LOGGER.debug(
-                "[%s] WD_V5: Packet too short (%d bytes), need at least %d",
+                "[%s] modern_V5: Packet too short (%d bytes), need at least %d",
                 self.device_name,
                 len(data),
-                WD_V5_MIN_DATA_PACKET_SIZE,
+                MODERN_V5_MIN_DATA_PACKET_SIZE,
             )
             return
 
         # Verify header
         header = bytes(data[0:4])
-        if header != WD_V5_HEADER:
+        if header != MODERN_V5_HEADER:
             _LOGGER.debug(
-                "[%s] WD_V5: Invalid header: %s (expected %s)",
+                "[%s] modern_V5: Invalid header: %s (expected %s)",
                 self.device_name,
                 header.hex(),
-                WD_V5_HEADER.hex(),
+                MODERN_V5_HEADER.hex(),
             )
             return
 
         # Get message type
-        msg_type = data[WD_V5_BYTE_MSG_TYPE]
+        msg_type = data[MODERN_V5_BYTE_MSG_TYPE]
         sequence = data[5]
 
         _LOGGER.debug(
-            "[%s] WD_V5: Packet type=0x%02x seq=%d len=%d",
+            "[%s] modern_V5: Packet type=0x%02x seq=%d len=%d",
             self.device_name,
             msg_type,
             sequence,
@@ -736,9 +808,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         # Only parse data packets (type 0x01)
-        if msg_type != WD_V5_MSG_TYPE_DATA:
+        if msg_type != MODERN_V5_MSG_TYPE_DATA:
             _LOGGER.debug(
-                "[%s] WD_V5: Skipping non-data packet (type 0x%02x): %s",
+                "[%s] modern_V5: Skipping non-data packet (type 0x%02x): %s",
                 self.device_name,
                 msg_type,
                 data.hex(),
@@ -747,28 +819,28 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             # Extract voltage (big-endian int32 ÷ 10000)
-            voltage_bytes = data[WD_V5_BYTE_VOLTAGE_START:WD_V5_BYTE_VOLTAGE_END]
+            voltage_bytes = data[MODERN_V5_BYTE_VOLTAGE_START:MODERN_V5_BYTE_VOLTAGE_END]
             voltage_raw = struct.unpack(">I", voltage_bytes)[0]
             voltage = voltage_raw / DATA_CONVERSION_FACTOR
 
             # Extract current (big-endian int32 ÷ 10000)
-            current_bytes = data[WD_V5_BYTE_CURRENT_START:WD_V5_BYTE_CURRENT_END]
+            current_bytes = data[MODERN_V5_BYTE_CURRENT_START:MODERN_V5_BYTE_CURRENT_END]
             current_raw = struct.unpack(">I", current_bytes)[0]
             current = current_raw / DATA_CONVERSION_FACTOR
 
             # Extract power (big-endian int32 ÷ 10000)
-            power_bytes = data[WD_V5_BYTE_POWER_START:WD_V5_BYTE_POWER_END]
+            power_bytes = data[MODERN_V5_BYTE_POWER_START:MODERN_V5_BYTE_POWER_END]
             power_raw = struct.unpack(">I", power_bytes)[0]
             power = power_raw / DATA_CONVERSION_FACTOR
 
             # Extract energy if packet is long enough (bytes 21-24)
             energy = 0.0
-            if len(data) >= WD_V5_MIN_ENERGY_PACKET_SIZE:
-                energy_bytes = data[WD_V5_BYTE_ENERGY_START:WD_V5_BYTE_ENERGY_END]
+            if len(data) >= MODERN_V5_MIN_ENERGY_PACKET_SIZE:
+                energy_bytes = data[MODERN_V5_BYTE_ENERGY_START:MODERN_V5_BYTE_ENERGY_END]
                 energy_raw = struct.unpack(">I", energy_bytes)[0]
                 energy = energy_raw / DATA_CONVERSION_FACTOR
                 _LOGGER.debug(
-                    "[%s] WD_V5: Energy raw=%s(%d) = %.2f kWh",
+                    "[%s] modern_V5: Energy raw=%s(%d) = %.2f kWh",
                     self.device_name,
                     energy_bytes.hex(),
                     energy_raw,
@@ -777,7 +849,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Log parsed values with raw hex for debugging
             _LOGGER.debug(
-                "[%s] WD_V5: Raw values - V=%s(%d) I=%s(%d) P=%s(%d)",
+                "[%s] modern_V5: Raw values - V=%s(%d) I=%s(%d) P=%s(%d)",
                 self.device_name,
                 voltage_bytes.hex(),
                 voltage_raw,
@@ -788,7 +860,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
             _LOGGER.info(
-                "[%s] WD_V5: Line 1 - V=%.2fV I=%.2fA P=%.2fW E=%.2fkWh",
+                "[%s] modern_V5: Line 1 - V=%.2fV I=%.2fA P=%.2fW E=%.2fkWh",
                 self.device_name,
                 voltage,
                 current,
@@ -807,18 +879,18 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Try to decode Line 2 if packet is long enough
             # For dual-phase V5 devices (if they exist), L2 data should be at bytes 25-36
             self._line_2_data = None
-            if len(data) >= WD_V5_MIN_L2_PACKET_SIZE:
-                l2_voltage_bytes = data[WD_V5_BYTE_L2_VOLTAGE_START:WD_V5_BYTE_L2_VOLTAGE_END]
+            if len(data) >= MODERN_V5_MIN_L2_PACKET_SIZE:
+                l2_voltage_bytes = data[MODERN_V5_BYTE_L2_VOLTAGE_START:MODERN_V5_BYTE_L2_VOLTAGE_END]
                 l2_voltage_raw = struct.unpack(">I", l2_voltage_bytes)[0]
                 l2_voltage = l2_voltage_raw / DATA_CONVERSION_FACTOR
 
                 # Check if L2 voltage is in valid range (indicates dual-phase device)
-                if WD_V5_VOLTAGE_MIN <= l2_voltage <= WD_V5_VOLTAGE_MAX:
-                    l2_current_bytes = data[WD_V5_BYTE_L2_CURRENT_START:WD_V5_BYTE_L2_CURRENT_END]
+                if MODERN_V5_VOLTAGE_MIN <= l2_voltage <= MODERN_V5_VOLTAGE_MAX:
+                    l2_current_bytes = data[MODERN_V5_BYTE_L2_CURRENT_START:MODERN_V5_BYTE_L2_CURRENT_END]
                     l2_current_raw = struct.unpack(">I", l2_current_bytes)[0]
                     l2_current = l2_current_raw / DATA_CONVERSION_FACTOR
 
-                    l2_power_bytes = data[WD_V5_BYTE_L2_POWER_START:WD_V5_BYTE_L2_POWER_END]
+                    l2_power_bytes = data[MODERN_V5_BYTE_L2_POWER_START:MODERN_V5_BYTE_L2_POWER_END]
                     l2_power_raw = struct.unpack(">I", l2_power_bytes)[0]
                     l2_power = l2_power_raw / DATA_CONVERSION_FACTOR
 
@@ -830,7 +902,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     }
 
                     _LOGGER.info(
-                        "[%s] WD_V5: Line 2 - V=%.2fV I=%.2fA P=%.2fW (dual-phase detected)",
+                        "[%s] modern_V5: Line 2 - V=%.2fV I=%.2fA P=%.2fW (dual-phase detected)",
                         self.device_name,
                         l2_voltage,
                         l2_current,
@@ -838,7 +910,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 else:
                     _LOGGER.debug(
-                        "[%s] WD_V5: L2 voltage %.2fV out of range, single-phase device",
+                        "[%s] modern_V5: L2 voltage %.2fV out of range, single-phase device",
                         self.device_name,
                         l2_voltage,
                     )
@@ -846,18 +918,18 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Error code not yet decoded for V5
             self._error_code = 0
 
-            _LOGGER.debug("[%s] WD_V5: Line 1 data: %s", self.device_name, self._line_1_data)
+            _LOGGER.debug("[%s] modern_V5: Line 1 data: %s", self.device_name, self._line_1_data)
 
         except struct.error as err:
             _LOGGER.error(
-                "[%s] WD_V5: Parse error at struct unpack: %s (data: %s)",
+                "[%s] modern_V5: Parse error at struct unpack: %s (data: %s)",
                 self.device_name,
                 err,
                 data.hex(),
             )
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.error(
-                "[%s] WD_V5: Unexpected parse error: %s (data: %s)",
+                "[%s] modern_V5: Unexpected parse error: %s (data: %s)",
                 self.device_name,
                 err,
                 data.hex(),
