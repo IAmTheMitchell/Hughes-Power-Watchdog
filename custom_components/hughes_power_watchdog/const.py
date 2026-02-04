@@ -45,7 +45,7 @@ CHARACTERISTIC_UUID_RX = LEGACY_CHARACTERISTIC_UUID_RX
 # =============================================================================
 # MODERN V5 PROTOCOL (WD_V5_* devices)
 # =============================================================================
-# Reverse engineered from Bluetooth captures - see bt_logs/WD_V5_PROTOCOL.md
+# Reverse engineered from Bluetooth captures - see docs/protocol.md
 MODERN_V5_SERVICE_UUID = "000000ff-0000-1000-8000-00805f9b34fb"
 MODERN_V5_CHARACTERISTIC_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"  # Bidirectional
 
