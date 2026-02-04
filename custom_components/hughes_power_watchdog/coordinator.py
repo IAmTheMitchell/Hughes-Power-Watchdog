@@ -199,6 +199,11 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return True if monitoring is enabled."""
         return self._monitoring_enabled
 
+    @property
+    def is_v5_protocol(self) -> bool:
+        """Return True if device uses the WD_V5 protocol (single-phase)."""
+        return self._is_v5_protocol
+
     async def _ensure_connected(self) -> BleakClient:
         """Ensure we have an active BLE connection.
 
