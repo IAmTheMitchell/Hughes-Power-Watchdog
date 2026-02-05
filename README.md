@@ -18,7 +18,7 @@ Adding this support is on the roadmap but will require assistance from users who
 | ---------- | -------- | ------------ |
 | PWD50-EPD  | Legacy   | None         |
 | PWD-VM-30A | Legacy   | None         |
-| WD_V5_*    | V5 (Beta)| Experimental - needs testing |
+| PWD30EPOW  | V5       | None         |
 
 Please let me know via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues) if you have tested on other models so they can be included in the README.
 
@@ -31,7 +31,7 @@ Based on the ESPHome implementation by spbrogan, tango2590, and makifoxgirl.
 ### Supported Models
 - Hughes Power Watchdog (PWD) - any model with Bluetooth
 - Hughes Power Watch (PWS) - any model with Bluetooth (not tested yet)
-- Hughes Power Watchdog V5 (WD_V5_*) - **Experimental** (v0.5.0+)
+- Hughes Power Watchdog V5 (WD_V5_*) - Supported (v0.5.0+)
 
 ### Available Sensors
 - **Line 1 Voltage** (volts)
@@ -92,21 +92,22 @@ If your device is not auto-discovered but is powered on and within Bluetooth ran
 
 > **Important:** If you successfully configure your device using manual MAC entry, please [open a GitHub issue](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues) and include your device model name. This helps us add it to the auto-discovery list for future users.
 
-## WD_V5 Support (Experimental)
+## V5 Protocol Support
 
-Starting with v0.5.0, this integration includes **experimental** support for the newer WD_V5 devices (device names starting with `WD_V5_`). These devices use a different Bluetooth protocol than the legacy PMD/PWS models.
+Starting with v0.5.0, this integration supports the newer V5 devices (device names starting with `WD_V5_`, such as PWD30EPOW). These devices use a different Bluetooth protocol than the legacy PMD/PWS models.
 
-**WD_V5 Status:**
-- Voltage, Current, Power readings - Should work
-- Energy (kWh) - Not yet implemented
-- Error codes - Not yet implemented
+**V5 Status:**
+- ✅ Voltage, Current, Power readings - Working
+- ✅ Energy (kWh) - Working
+- ⚠️ Error codes - Not yet implemented
+- ⚠️ Line 2 (50A dual-phase) - Not yet tested
 
-**If you have a WD_V5 device**, please help us test by:
+**If you have a V5 device with issues**, please help us by:
 1. Enabling debug logging (see below)
 2. Checking if the readings match your Hughes mobile app
 3. Reporting any issues via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues)
 
-### Debug Logging for WD_V5
+### Debug Logging
 
 Add this to your `configuration.yaml` to enable debug logging:
 
@@ -117,7 +118,7 @@ logger:
     custom_components.hughes_power_watchdog: debug
 ```
 
-Then check your Home Assistant logs for entries prefixed with `[WD_V5]`.
+Then check your Home Assistant logs for entries prefixed with `[modern_V5]` or `[Legacy]`.
 
 ## Requirements
 
