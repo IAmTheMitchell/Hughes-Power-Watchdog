@@ -89,21 +89,11 @@ from .const import (
     SENSOR_TOTAL_POWER,
     SENSOR_VOLTAGE_L1,
     SENSOR_VOLTAGE_L2,
+    ERROR_CODES,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# Error code mapping (from ESPHome implementation)
-ERROR_CODES = {
-    0: "No Error",
-    1: "Open Ground",
-    2: "Reverse Polarity",
-    3: "Open Neutral",
-    4: "High Voltage",
-    5: "Low Voltage",
-    6: "High Voltage Surge",
-    7: "Frequency Error",
-}
 
 
 class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):

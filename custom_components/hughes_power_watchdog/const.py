@@ -138,3 +138,18 @@ SENSOR_ERROR_TEXT = "error_text"
 
 # Switch keys
 SWITCH_MONITORING = "monitoring"
+
+# Error code mapping (from Hughes Power Watchdog official documentation)
+# Source: PWD-3050EPO Installation & Operating Instructions manual
+ERROR_CODES = {
+    0: "No Error",
+    1: "Line 1 voltage exceeded 132V or dropped below 104V",
+    2: "Line 2 voltage exceeded 132V or dropped below 104V",
+    3: "Line 1 amperage rating exceeded",
+    4: "Line 2 amperage rating exceeded",
+    5: "Line 1 hot and neutral wires reversed",
+    6: "Line 2 hot and neutral wires reversed",
+    7: "Ground connection lost",
+    8: "No neutral circuit detected",
+    9: "Surge protection capacity depleted - replace surge board",
+}
