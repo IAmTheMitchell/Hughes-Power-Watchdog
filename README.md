@@ -4,9 +4,9 @@
 [![GitHub Release](https://img.shields.io/github/v/release/john-k-mcdowell/My-Hughes-Power-Watchdog?include_prereleases)](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/releases)
 [![License](https://img.shields.io/github/license/john-k-mcdowell/My-Hughes-Power-Watchdog)](LICENSE)
 
-A Home Assistant custom integration for **Hughes Power Watchdog Surge Protectors** with Bluetooth connectivity. 
+A Home Assistant custom integration for **Hughes Power Watchdog Surge Protectors** with Bluetooth connectivity.
 
-DOES NOT WORK WITH WiFi DEVICES.  
+DOES NOT WORK WITH WiFi DEVICES.
 
 Adding this support is on the roadmap but will require assistance from users who have WiFi versions to help reverse engineer the protocols.
 
@@ -33,6 +33,12 @@ Based on the ESPHome implementation by spbrogan, tango2590, and makifoxgirl.
 - Hughes Power Watch (PWS) - any model with Bluetooth (not tested yet)
 - Hughes Power Watchdog V5 (WD_V5_*) - Supported (v0.5.0+)
 
+### Real-Time Sensor Updates (v0.6.0)
+
+Starting with v0.6.0, the integration uses a **push-based model** for real-time sensor updates. The device streams data continuously via BLE notifications (~1 second intervals), and the integration subscribes once and pushes updates to Home Assistant entities as they arrive. This replaces the previous polling model that only captured data every 30 seconds.
+
+> **Note:** The real-time push model has been tested and verified on Legacy devices (PMD/PWS/PMS). The same approach has been applied to V5 devices but **has not yet been tested** due to lack of a V5 test device. If you have a V5 device, please enable debug logging and report any issues via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues).
+
 ### Available Sensors
 - **Line 1 Voltage** (volts)
 - **Line 1 Current** (amps)
@@ -47,9 +53,9 @@ Based on the ESPHome implementation by spbrogan, tango2590, and makifoxgirl.
 - **Line 2 Power** (watts)
 - **Total Combined Power** (L1 + L2, watts)
 
-### Controls (Future Development)
-- ** Not Fully Tested yet - Monitoring Switch - Enable/disable BLE connection to allow other apps to connect.  Switch turns monitoring on and off, have not yet verified if this allows the WatchDog App to connect.
-- ** Not Implemented yet - Reset Power Usage Total
+### Controls
+- **Monitoring Switch** - Enable/disable the BLE connection. Turning monitoring off cleanly unsubscribes from notifications and disconnects, freeing the BLE connection slot (useful for ESPHome Bluetooth Proxy users with the default 3-slot limit). Turning it back on reconnects and resumes real-time data.
+- *Not Implemented yet* - Reset Power Usage Total
 
 ## Installation
 
@@ -97,12 +103,13 @@ If your device is not auto-discovered but is powered on and within Bluetooth ran
 Starting with v0.5.0, this integration supports the newer V5 devices (device names starting with `WD_V5_`, such as PWD30EPOW). These devices use a different Bluetooth protocol than the legacy PMD/PWS models.
 
 **V5 Status:**
-- ✅ Voltage, Current, Power readings - Working
-- ✅ Energy (kWh) - Working
-- ⚠️ Error codes - Not yet implemented
-- ⚠️ Line 2 (50A dual-phase) - Not yet tested
+- Voltage, Current, Power readings - Working
+- Energy (kWh) - Working
+- Real-time push updates (v0.6.0) - **Not yet tested** (needs V5 device)
+- Error codes - Not yet implemented
+- Line 2 (50A dual-phase) - Not yet tested
 
-**If you have a V5 device with issues**, please help us by:
+**If you have a V5 device**, please help us by:
 1. Enabling debug logging (see below)
 2. Checking if the readings match your Hughes mobile app
 3. Reporting any issues via [GitHub issues](https://github.com/john-k-mcdowell/My-Hughes-Power-Watchdog/issues)

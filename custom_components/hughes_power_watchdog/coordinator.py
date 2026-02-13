@@ -99,7 +99,7 @@ _LOGGER = logging.getLogger(__name__)
 class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage Hughes Power Watchdog data via BLE.
 
-    Legacy devices stream data continuously (~1s intervals) via BLE
+    Both Legacy and V5 devices stream data continuously via BLE
     notifications. The coordinator subscribes once and pushes updates
     to entities in real-time. The update_interval acts as a connection
     watchdog, reconnecting if the subscription drops.
@@ -151,8 +151,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Modern V5 specific: track if initialization command has been sent
         self._modern_v5_initialized: bool = False
 
-        # Legacy persistent subscription tracking
+        # Persistent subscription tracking (both protocols use push model)
         self._legacy_notifications_active: bool = False
+        self._modern_v5_notifications_active: bool = False
         self._notification_count: int = 0
         self._last_notification_time: float = 0
 
@@ -356,7 +357,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if self._legacy_notifications_active:
                         await self._client.stop_notify(CHARACTERISTIC_UUID_TX)
                         _LOGGER.debug("[%s] Unsubscribed from Legacy notifications", self.device_name)
-                    elif self._modern_v5_initialized:
+                    elif self._modern_v5_notifications_active:
                         await self._client.stop_notify(MODERN_V5_CHARACTERISTIC_UUID)
                         _LOGGER.debug("[%s] Unsubscribed from V5 notifications", self.device_name)
                 except BleakError as err:
@@ -370,6 +371,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 finally:
                     self._client = None
                     self._modern_v5_initialized = False
+                    self._modern_v5_notifications_active = False
                     self._legacy_notifications_active = False
 
     async def _monitor_connection_health(self) -> None:
@@ -384,7 +386,11 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await asyncio.sleep(30)
 
                 # Only check if we expect notifications to be flowing
-                if self._legacy_notifications_active and self._last_notification_time:
+                notifications_active = (
+                    self._legacy_notifications_active
+                    or self._modern_v5_notifications_active
+                )
+                if notifications_active and self._last_notification_time:
                     stale_time = time.time() - self._last_notification_time
 
                     if stale_time > NOTIFICATION_STALE_TIMEOUT:
@@ -526,21 +532,20 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._legacy_notifications_active = False
 
     async def _request_device_status_modern_v5(self) -> None:
-        """Request status from WD_V5 device.
+        """Ensure V5 device has an active persistent notification subscription.
 
-        WD_V5 protocol requires:
-        1. Send initialization command on first connection
-        2. Subscribe to notifications on bidirectional characteristic
-        3. Device streams data continuously after init
+        V5 protocol requires an initialization command on first connection,
+        then the device streams data continuously. This method subscribes
+        once and keeps the subscription active. Data is pushed to entities
+        via async_set_updated_data() in the notification handler.
+        Called by the connection watchdog to reconnect if needed.
         """
         try:
             client = await self._ensure_connected()
 
-            # Clear buffer for new data
-            self._data_buffer = bytearray()
-
             # Send initialization command if not yet done
             if not self._modern_v5_initialized:
+                self._data_buffer = bytearray()
                 _LOGGER.debug(
                     "[%s] modern_V5: Sending init command: %s",
                     self.device_name,
@@ -565,47 +570,44 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     raise
 
-            _LOGGER.debug(
-                "[%s] modern_V5: Subscribing to notifications on %s",
-                self.device_name,
-                MODERN_V5_CHARACTERISTIC_UUID,
-            )
+            if not self._modern_v5_notifications_active:
+                self._data_buffer = bytearray()
 
-            # Subscribe to notifications
-            await client.start_notify(
-                MODERN_V5_CHARACTERISTIC_UUID, self._notification_handler_modern_v5
-            )
+                _LOGGER.info(
+                    "[%s] modern_V5: Subscribing to persistent notifications on %s",
+                    self.device_name,
+                    MODERN_V5_CHARACTERISTIC_UUID,
+                )
 
-            # Wait for device to send data
-            await asyncio.sleep(DATA_COLLECTION_TIMEOUT)
+                await client.start_notify(
+                    MODERN_V5_CHARACTERISTIC_UUID, self._notification_handler_modern_v5
+                )
+                self._modern_v5_notifications_active = True
 
-            # Unsubscribe from notifications
-            await client.stop_notify(MODERN_V5_CHARACTERISTIC_UUID)
+                # Wait briefly for initial data
+                await asyncio.sleep(DATA_COLLECTION_TIMEOUT)
 
-            # Update last activity time
             self._last_activity_time = time.time()
 
         except BleakError as err:
-            _LOGGER.error(
-                "[%s] modern_V5: Error requesting device status: %s",
+            _LOGGER.debug(
+                "[%s] modern_V5: Error setting up subscription: %s",
                 self.device_name,
                 err,
             )
-            # Reset initialization flag on connection error so we retry init
             self._modern_v5_initialized = False
+            self._modern_v5_notifications_active = False
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Connection watchdog - ensures subscription is active.
 
-        For Legacy devices, real-time data arrives via push notifications
-        in _notification_handler_legacy(). This method only runs on the
+        Real-time data arrives via push notifications in the protocol-
+        specific notification handlers. This method only runs on the
         CONNECTION_CHECK_INTERVAL to verify the subscription is still
         active and reconnect if needed.
 
-        For Modern V5 devices, this still polls as before.
-
         Returns:
-            Dictionary of current sensor values (may be cached for Legacy).
+            Dictionary of current sensor values (cached, updated by push).
         """
         try:
             # Don't reconnect if monitoring was disabled
@@ -771,12 +773,22 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Handle BLE notification data from WD_V5 device.
 
         WD_V5 sends variable-length packets with $yw@ header and q! end marker.
-        Each notification is typically a complete packet.
+        Each notification is typically a complete packet. After parsing,
+        pushes updated data to all entities immediately.
         """
+        now = time.time()
+        self._notification_count += 1
+        interval = now - self._last_notification_time if self._last_notification_time else 0
+        self._last_notification_time = now
+        self._last_activity_time = now
+
         _LOGGER.debug(
-            "[%s] modern_V5: Received %d bytes: %s",
+            "[%s] modern_V5: Notification #%d (+%.2fs) %d bytes from %s: %s",
             self.device_name,
+            self._notification_count,
+            interval,
             len(data),
+            sender,
             data.hex(),
         )
 
@@ -784,6 +796,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Parse immediately if we have the header
         if len(data) >= 4 and data[0:4] == MODERN_V5_HEADER:
             self._parse_data_packet_modern_v5(data)
+            # Push updated data to all entities immediately
+            if self._line_1_data:
+                self.async_set_updated_data(self._build_data_dict())
         else:
             # Buffer data if it doesn't start with header (continuation)
             self._data_buffer.extend(data)
