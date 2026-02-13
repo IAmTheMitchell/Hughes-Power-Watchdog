@@ -18,11 +18,12 @@ DEVICE_NAME_PREFIXES = ["PMD", "PWS", "PMS", "WD_V5"]
 DEVICE_NAME_PREFIXES_LEGACY = ["PMD", "PWS", "PMS"]
 DEVICE_NAME_PREFIXES_MODERN_V5 = ["WD_V5"]
 
-# Update interval
-DEFAULT_SCAN_INTERVAL = 30  # seconds
+# Connection health check interval (coordinator watchdog, not data polling)
+# Actual data arrives via push notifications from the device (~1s intervals)
+CONNECTION_CHECK_INTERVAL = 30  # seconds
 
 # Connection management
-CONNECTION_IDLE_TIMEOUT = 120  # seconds - disconnect after this much idle time
+NOTIFICATION_STALE_TIMEOUT = 60  # seconds - warn/reconnect if no notifications
 CONNECTION_MAX_ATTEMPTS = 3  # Maximum connection retry attempts
 CONNECTION_MAX_DELAY = 6.0  # Maximum retry delay in seconds
 CONNECTION_DELAY_REDUCTION = 0.75  # Multiply delay by this on success

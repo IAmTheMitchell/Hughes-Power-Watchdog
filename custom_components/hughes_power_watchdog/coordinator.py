@@ -71,14 +71,14 @@ from .const import (
     # Legacy protocol UUIDs
     LEGACY_SERVICE_UUID,
     # Shared constants
+    CONNECTION_CHECK_INTERVAL,
     CONNECTION_DELAY_REDUCTION,
-    CONNECTION_IDLE_TIMEOUT,
     CONNECTION_MAX_ATTEMPTS,
     CONNECTION_MAX_DELAY,
     DATA_COLLECTION_TIMEOUT,
     DATA_CONVERSION_FACTOR,
-    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    NOTIFICATION_STALE_TIMEOUT,
     SENSOR_COMBINED_POWER,
     SENSOR_CURRENT_L1,
     SENSOR_CURRENT_L2,
@@ -97,11 +97,12 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Class to manage fetching Hughes Power Watchdog data via BLE.
+    """Class to manage Hughes Power Watchdog data via BLE.
 
-    Uses persistent BLE connection with command queue for future two-way
-    communication support. Connection is maintained with idle timeout and
-    automatic reconnection.
+    Legacy devices stream data continuously (~1s intervals) via BLE
+    notifications. The coordinator subscribes once and pushes updates
+    to entities in real-time. The update_interval acts as a connection
+    watchdog, reconnecting if the subscription drops.
     """
 
     def __init__(
@@ -138,7 +139,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{self.address}",
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            update_interval=timedelta(seconds=CONNECTION_CHECK_INTERVAL),
         )
 
         # Data buffers
@@ -150,8 +151,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Modern V5 specific: track if initialization command has been sent
         self._modern_v5_initialized: bool = False
 
-        # Passive listening: keep Legacy notifications subscribed to detect
-        # whether the device streams data continuously without polling
+        # Legacy persistent subscription tracking
         self._legacy_notifications_active: bool = False
         self._notification_count: int = 0
         self._last_notification_time: float = 0
@@ -344,9 +344,24 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
     async def _disconnect(self) -> None:
-        """Disconnect from BLE device."""
+        """Disconnect from BLE device.
+
+        Explicitly unsubscribes from notifications before disconnecting
+        to ensure clean teardown of BLE subscriptions.
+        """
         async with self._connection_lock:
             if self._client and self._client.is_connected:
+                # Explicitly unsubscribe before disconnecting
+                try:
+                    if self._legacy_notifications_active:
+                        await self._client.stop_notify(CHARACTERISTIC_UUID_TX)
+                        _LOGGER.debug("[%s] Unsubscribed from Legacy notifications", self.device_name)
+                    elif self._modern_v5_initialized:
+                        await self._client.stop_notify(MODERN_V5_CHARACTERISTIC_UUID)
+                        _LOGGER.debug("[%s] Unsubscribed from V5 notifications", self.device_name)
+                except BleakError as err:
+                    _LOGGER.debug("[%s] Error unsubscribing: %s (continuing with disconnect)", self.device_name, err)
+
                 try:
                     await self._client.disconnect()
                     _LOGGER.debug("Disconnected from %s", self.address)
@@ -354,30 +369,30 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.debug("Error disconnecting from %s: %s", self.address, err)
                 finally:
                     self._client = None
-                    # Reset V5 initialization flag so we send init on reconnect
                     self._modern_v5_initialized = False
-                    # Reset Legacy subscription so we re-subscribe on reconnect
                     self._legacy_notifications_active = False
 
     async def _monitor_connection_health(self) -> None:
-        """Monitor connection health and disconnect idle connections.
+        """Monitor connection health and detect stale notifications.
 
-        Runs in background and checks every 30 seconds if the connection
-        has been idle for longer than CONNECTION_IDLE_TIMEOUT.
+        Runs in background every 30 seconds. If no notifications have
+        arrived for NOTIFICATION_STALE_TIMEOUT seconds, disconnects and
+        lets the connection watchdog reconnect on next cycle.
         """
         while True:
             try:
                 await asyncio.sleep(30)
 
-                # Check if connection is idle
-                if self._client and self._client.is_connected:
-                    idle_time = time.time() - self._last_activity_time
+                # Only check if we expect notifications to be flowing
+                if self._legacy_notifications_active and self._last_notification_time:
+                    stale_time = time.time() - self._last_notification_time
 
-                    if idle_time > CONNECTION_IDLE_TIMEOUT:
-                        _LOGGER.debug(
-                            "Connection to %s idle for %d seconds, disconnecting",
-                            self.address,
-                            int(idle_time),
+                    if stale_time > NOTIFICATION_STALE_TIMEOUT:
+                        _LOGGER.warning(
+                            "[%s] No notifications received for %d seconds, "
+                            "reconnecting",
+                            self.device_name,
+                            int(stale_time),
                         )
                         await self._disconnect()
 
@@ -477,23 +492,21 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._request_device_status_legacy()
 
     async def _request_device_status_legacy(self) -> None:
-        """Request status from legacy PMD/PWS/PMS device.
+        """Ensure Legacy device has an active persistent notification subscription.
 
-        Uses persistent notification subscription to detect whether the
-        device streams data continuously. Subscribes once and keeps the
-        subscription active across polls.
+        Legacy devices stream data continuously at ~1s intervals. This method
+        subscribes once and keeps the subscription active. Data is pushed to
+        entities via async_set_updated_data() in the notification handler.
+        Called by the connection watchdog to reconnect if needed.
         """
         try:
             client = await self._ensure_connected()
 
-            # Subscribe once and keep listening - don't unsubscribe
             if not self._legacy_notifications_active:
-                # Clear buffer for fresh start
                 self._data_buffer = bytearray()
 
-                _LOGGER.debug(
-                    "[%s] Legacy: Subscribing to notifications on %s "
-                    "(persistent - will not unsubscribe)",
+                _LOGGER.info(
+                    "[%s] Legacy: Subscribing to persistent notifications on %s",
                     self.device_name,
                     CHARACTERISTIC_UUID_TX,
                 )
@@ -503,22 +516,13 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 self._legacy_notifications_active = True
 
-                # Wait for initial data on first subscribe
+                # Wait briefly for initial data
                 await asyncio.sleep(DATA_COLLECTION_TIMEOUT)
-            else:
-                _LOGGER.debug(
-                    "[%s] Legacy: Notifications already active, "
-                    "using accumulated data (%d packets received so far)",
-                    self.device_name,
-                    self._notification_count,
-                )
 
-            # Update last activity time
             self._last_activity_time = time.time()
 
         except BleakError as err:
-            _LOGGER.debug("[%s] Legacy: Error requesting device status: %s", self.device_name, err)
-            # Reset subscription state on error so we re-subscribe
+            _LOGGER.debug("[%s] Legacy: Error setting up subscription: %s", self.device_name, err)
             self._legacy_notifications_active = False
 
     async def _request_device_status_modern_v5(self) -> None:
@@ -591,27 +595,29 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._modern_v5_initialized = False
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from Hughes Power Watchdog device.
+        """Connection watchdog - ensures subscription is active.
 
-        Yields to command queue - if commands are pending, returns
-        cached data to prioritize command execution.
+        For Legacy devices, real-time data arrives via push notifications
+        in _notification_handler_legacy(). This method only runs on the
+        CONNECTION_CHECK_INTERVAL to verify the subscription is still
+        active and reconnect if needed.
+
+        For Modern V5 devices, this still polls as before.
 
         Returns:
-            Dictionary of sensor values.
-
-        Raises:
-            UpdateFailed: If data cannot be retrieved.
+            Dictionary of current sensor values (may be cached for Legacy).
         """
         try:
-            # Don't poll if commands are pending - let them execute first
+            # Don't interfere if commands are pending
             if not self._command_queue.empty():
-                _LOGGER.debug("Commands pending, skipping poll for %s", self.address)
+                _LOGGER.debug("Commands pending, skipping check for %s", self.address)
                 return self.data or {}
 
-            # Request device status
+            # Ensure subscription/connection is active
             await self._request_device_status()
 
-            # Return parsed data
+            # Return current data (for Legacy, this is continuously
+            # updated by the notification handler)
             return self._build_data_dict()
 
         except BleakError as err:
@@ -626,9 +632,9 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _notification_handler_legacy(self, sender: int, data: bytearray) -> None:
         """Handle BLE notification data from legacy Hughes device.
 
-        Device sends 40 bytes total in two 20-byte chunks.
-        Chunk 1: Header + voltage/current/power/energy/error
-        Chunk 2: Line identifier (Line 1 or Line 2)
+        Device streams data continuously at ~1s intervals. Each cycle
+        sends 40 bytes in two 20-byte chunks. After parsing a complete
+        packet, pushes updated data to all entities immediately.
         """
         now = time.time()
         self._notification_count += 1
@@ -652,8 +658,11 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Check if we have a complete 40-byte packet
         if len(self._data_buffer) >= TOTAL_DATA_SIZE:
             self._parse_data_packet_legacy()
-            # Clear buffer after parsing
             self._data_buffer = bytearray()
+
+            # Push updated data to all entities immediately
+            if self._line_1_data:
+                self.async_set_updated_data(self._build_data_dict())
 
     def _parse_data_packet_legacy(self) -> None:
         """Parse complete 40-byte legacy data packet."""
