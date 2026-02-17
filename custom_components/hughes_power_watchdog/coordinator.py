@@ -66,7 +66,6 @@ from .const import (
     MODERN_V5_MIN_ENERGY_PACKET_SIZE,
     MODERN_V5_MIN_L2_PACKET_SIZE,
     MODERN_V5_MSG_TYPE_DATA,
-    MODERN_V5_VOLTAGE_MAX,
     MODERN_V5_VOLTAGE_MIN,
     # Legacy protocol UUIDs
     LEGACY_SERVICE_UUID,
@@ -145,7 +144,7 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Data buffers
         self._data_buffer: bytearray = bytearray()
         self._line_1_data: dict[str, float] = {}
-        self._line_2_data: dict[str, float] = {}
+        self._line_2_data: dict[str, float] | None = None
         self._error_code: int = 0
 
         # Modern V5 specific: track if initialization command has been sent
@@ -908,61 +907,66 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 power_raw,
             )
 
-            _LOGGER.info(
-                "[%s] modern_V5: Line 1 - V=%.2fV I=%.2fA P=%.2fW E=%.2fkWh",
-                self.device_name,
-                voltage,
-                current,
-                power,
-                energy,
-            )
+            # Some 50A V5 devices may send line-specific packets reusing the
+            # primary V/I/P offsets, with a legacy-style line identifier.
+            packet_line_id = bytes(data[37:40]) if len(data) >= 40 else None
+            is_line_2_packet = packet_line_id == LINE_2_ID
+            is_line_1_packet = packet_line_id == LINE_1_ID
 
-            # Store Line 1 data
-            self._line_1_data = {
-                "voltage": voltage,
-                "current": current,
-                "power": power,
-                "energy": energy,
-            }
-
-            # Try to decode Line 2 if packet is long enough
-            # For dual-phase V5 devices (if they exist), L2 data should be at bytes 25-36
-            self._line_2_data = None
-            if len(data) >= MODERN_V5_MIN_L2_PACKET_SIZE:
-                l2_voltage_bytes = data[MODERN_V5_BYTE_L2_VOLTAGE_START:MODERN_V5_BYTE_L2_VOLTAGE_END]
-                l2_voltage_raw = struct.unpack(">I", l2_voltage_bytes)[0]
-                l2_voltage = l2_voltage_raw / DATA_CONVERSION_FACTOR
-
-                # Check if L2 voltage is in valid range (indicates dual-phase device)
-                if MODERN_V5_VOLTAGE_MIN <= l2_voltage <= MODERN_V5_VOLTAGE_MAX:
-                    l2_current_bytes = data[MODERN_V5_BYTE_L2_CURRENT_START:MODERN_V5_BYTE_L2_CURRENT_END]
-                    l2_current_raw = struct.unpack(">I", l2_current_bytes)[0]
-                    l2_current = l2_current_raw / DATA_CONVERSION_FACTOR
-
-                    l2_power_bytes = data[MODERN_V5_BYTE_L2_POWER_START:MODERN_V5_BYTE_L2_POWER_END]
-                    l2_power_raw = struct.unpack(">I", l2_power_bytes)[0]
-                    l2_power = l2_power_raw / DATA_CONVERSION_FACTOR
-
-                    self._line_2_data = {
-                        "voltage": l2_voltage,
-                        "current": l2_current,
-                        "power": l2_power,
-                        "energy": 0,  # L2 energy position unknown
-                    }
-
+            if is_line_2_packet:
+                self._line_2_data = {
+                    "voltage": voltage,
+                    "current": current,
+                    "power": power,
+                    "energy": 0,
+                }
+                _LOGGER.info(
+                    "[%s] modern_V5: Line 2 packet - V=%.2fV I=%.2fA P=%.2fW (line-id mode)",
+                    self.device_name,
+                    voltage,
+                    current,
+                    power,
+                )
+            else:
+                self._line_1_data = {
+                    "voltage": voltage,
+                    "current": current,
+                    "power": power,
+                    "energy": energy,
+                }
+                if is_line_1_packet:
                     _LOGGER.info(
-                        "[%s] modern_V5: Line 2 - V=%.2fV I=%.2fA P=%.2fW (dual-phase detected)",
+                        "[%s] modern_V5: Line 1 packet - V=%.2fV I=%.2fA P=%.2fW E=%.2fkWh (line-id mode)",
                         self.device_name,
-                        l2_voltage,
-                        l2_current,
-                        l2_power,
+                        voltage,
+                        current,
+                        power,
+                        energy,
                     )
                 else:
-                    _LOGGER.debug(
-                        "[%s] modern_V5: L2 voltage %.2fV out of range, single-phase device",
+                    _LOGGER.info(
+                        "[%s] modern_V5: Line 1 - V=%.2fV I=%.2fA P=%.2fW E=%.2fkWh",
                         self.device_name,
-                        l2_voltage,
+                        voltage,
+                        current,
+                        power,
+                        energy,
                     )
+
+            # Try to decode embedded Line 2 block (bytes 25-36). This supports
+            # devices that report both lines in one frame.
+            embedded_line_2 = self._decode_modern_v5_dual_block_line2(data)
+            if not embedded_line_2:
+                embedded_line_2 = self._decode_modern_v5_embedded_line2(data)
+            if embedded_line_2:
+                self._line_2_data = embedded_line_2
+                _LOGGER.info(
+                    "[%s] modern_V5: Line 2 - V=%.2fV I=%.2fA P=%.2fW (decoded block)",
+                    self.device_name,
+                    embedded_line_2["voltage"],
+                    embedded_line_2["current"],
+                    embedded_line_2["power"],
+                )
 
             # Error code not yet decoded for V5
             self._error_code = 0
@@ -983,6 +987,115 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 err,
                 data.hex(),
             )
+
+    def _decode_modern_v5_dual_block_line2(
+        self, data: bytes | bytearray
+    ) -> dict[str, float] | None:
+        """Decode Line 2 for 79-byte V5 packets with dual 34-byte data blocks.
+
+        Observed on Gen 2 50A devices:
+        - Block 1 starts at byte 9 (Line 1 V/I/P/E)
+        - Block 2 starts at byte 43 (Line 2 V/I/P/E)
+        """
+        # Needs bytes up through 54 for L2 V/I/P extraction.
+        if len(data) < 55:
+            return None
+
+        # Byte 7-8 appears to be payload length. 0x0044 (68) indicates two
+        # 34-byte blocks in the payload, as seen in Gen 2 50A captures.
+        if data[7:9] != b"\x00\x44":
+            return None
+
+        l2_voltage_bytes = data[43:47]
+        l2_current_bytes = data[47:51]
+        l2_power_bytes = data[51:55]
+
+        l2_voltage = struct.unpack(">I", l2_voltage_bytes)[0] / DATA_CONVERSION_FACTOR
+        l2_current = struct.unpack(">I", l2_current_bytes)[0] / DATA_CONVERSION_FACTOR
+        l2_power = struct.unpack(">I", l2_power_bytes)[0] / DATA_CONVERSION_FACTOR
+
+        if not (MODERN_V5_VOLTAGE_MIN <= l2_voltage <= 145.0):
+            return None
+        if not (0.0 <= l2_current <= 80.0):
+            return None
+        if not (0.0 <= l2_power <= 20000.0):
+            return None
+
+        _LOGGER.debug(
+            "[%s] modern_V5: Dual-block L2 raw V=%s I=%s P=%s",
+            self.device_name,
+            l2_voltage_bytes.hex(),
+            l2_current_bytes.hex(),
+            l2_power_bytes.hex(),
+        )
+
+        return {
+            "voltage": l2_voltage,
+            "current": l2_current,
+            "power": l2_power,
+            "energy": 0,
+        }
+
+    def _decode_modern_v5_embedded_line2(self, data: bytes | bytearray) -> dict[str, float] | None:
+        """Decode Line 2 from bytes 25-36 in V5 packets using robust fallbacks."""
+        if len(data) < MODERN_V5_MIN_L2_PACKET_SIZE:
+            return None
+
+        l2_voltage_bytes = data[MODERN_V5_BYTE_L2_VOLTAGE_START:MODERN_V5_BYTE_L2_VOLTAGE_END]
+        l2_current_bytes = data[MODERN_V5_BYTE_L2_CURRENT_START:MODERN_V5_BYTE_L2_CURRENT_END]
+        l2_power_bytes = data[MODERN_V5_BYTE_L2_POWER_START:MODERN_V5_BYTE_L2_POWER_END]
+
+        # Try the known format first, then common fallback encodings.
+        # Scale=100 is included because some vendor payloads use centi-units.
+        decode_attempts = (
+            ("be_10000", "big", DATA_CONVERSION_FACTOR),
+            ("le_10000", "little", DATA_CONVERSION_FACTOR),
+            ("be_100", "big", 100),
+            ("le_100", "little", 100),
+        )
+
+        best_result: dict[str, float] | None = None
+        best_error = float("inf")
+
+        for mode, byteorder, scale in decode_attempts:
+            voltage = int.from_bytes(l2_voltage_bytes, byteorder=byteorder, signed=False) / scale
+            current = int.from_bytes(l2_current_bytes, byteorder=byteorder, signed=False) / scale
+            power = int.from_bytes(l2_power_bytes, byteorder=byteorder, signed=False) / scale
+
+            # Plausibility checks for RV shore power.
+            if not (MODERN_V5_VOLTAGE_MIN <= voltage <= 260.0):
+                continue
+            if not (0.0 <= current <= 70.0):
+                continue
+            if not (0.0 <= power <= 15000.0):
+                continue
+
+            # Prefer candidates where real power is reasonably close to
+            # apparent power, while allowing PF variation and measurement noise.
+            apparent_power = voltage * current
+            max_reasonable_power = (apparent_power * 1.25) + 250.0
+            if power > max_reasonable_power:
+                continue
+
+            error = abs(apparent_power - power)
+            if best_result is None or error < best_error:
+                best_error = error
+                best_result = {
+                    "voltage": voltage,
+                    "current": current,
+                    "power": power,
+                    "energy": 0,
+                }
+                _LOGGER.debug(
+                    "[%s] modern_V5: Embedded L2 candidate %s accepted V=%.2f I=%.2f P=%.2f",
+                    self.device_name,
+                    mode,
+                    voltage,
+                    current,
+                    power,
+                )
+
+        return best_result
 
     def _build_data_dict(self) -> dict[str, Any]:
         """Build data dictionary for entities."""
