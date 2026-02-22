@@ -1005,8 +1005,8 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         - Block 1 starts at byte 9 (Line 1 V/I/P/E)
         - Block 2 starts at byte 43 (Line 2 V/I/P/E)
         """
-        # Needs bytes up through 54 for L2 V/I/P extraction.
-        if len(data) < 55:
+        # Needs bytes up through 58 for L2 V/I/P/E extraction.
+        if len(data) < 59:
             return None
 
         # Byte 7-8 appears to be payload length. 0x0044 (68) indicates two
@@ -1017,10 +1017,12 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         l2_voltage_bytes = data[43:47]
         l2_current_bytes = data[47:51]
         l2_power_bytes = data[51:55]
+        l2_energy_bytes = data[55:59]
 
         l2_voltage = struct.unpack(">I", l2_voltage_bytes)[0] / DATA_CONVERSION_FACTOR
         l2_current = struct.unpack(">I", l2_current_bytes)[0] / DATA_CONVERSION_FACTOR
         l2_power = struct.unpack(">I", l2_power_bytes)[0] / DATA_CONVERSION_FACTOR
+        l2_energy = struct.unpack(">I", l2_energy_bytes)[0] / DATA_CONVERSION_FACTOR
 
         if not (MODERN_V5_VOLTAGE_MIN <= l2_voltage <= 145.0):
             return None
@@ -1028,20 +1030,25 @@ class HughesPowerWatchdogCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         if not (0.0 <= l2_power <= 20000.0):
             return None
+        # Energy should never be negative and should stay within a broad
+        # practical range for cumulative kWh totals.
+        if not (0.0 <= l2_energy <= 10_000_000.0):
+            return None
 
         _LOGGER.debug(
-            "[%s] modern_V5: Dual-block L2 raw V=%s I=%s P=%s",
+            "[%s] modern_V5: Dual-block L2 raw V=%s I=%s P=%s E=%s",
             self.device_name,
             l2_voltage_bytes.hex(),
             l2_current_bytes.hex(),
             l2_power_bytes.hex(),
+            l2_energy_bytes.hex(),
         )
 
         return {
             "voltage": l2_voltage,
             "current": l2_current,
             "power": l2_power,
-            "energy": None,
+            "energy": l2_energy,
         }
 
     def _decode_modern_v5_embedded_line2(

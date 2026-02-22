@@ -228,14 +228,15 @@ Two payload layouts have been observed:
 | **43-46** | 4 | **Voltage (L2)** | BE uint32 / 10000 | **Decoded** |
 | **47-50** | 4 | **Current (L2)** | BE uint32 / 10000 | **Decoded** |
 | **51-54** | 4 | **Power (L2)** | BE uint32 / 10000 | **Decoded** |
-| 55-76 | 22 | Unknown / per-block trailing fields | Vendor-specific | Partial |
+| **55-58** | 4 | **Energy (L2)** | BE uint32 / 10000 | **Decoded** |
+| 59-76 | 18 | Unknown / per-block trailing fields | Vendor-specific | Partial |
 | 77-78 | 2 | End Marker | ASCII `q!` | Decoded |
 
 ### Line 2 Detection
 
 For single-phase (30A) devices, only Line 1 data is valid. Bytes 25-36 contain non-voltage values for these devices.
 
-For validated Gen 2 50A dual-phase devices using the 79-byte dual-block layout (`0x0044`), Line 2 is decoded from bytes 43-54.
+For validated Gen 2 50A dual-phase devices using the 79-byte dual-block layout (`0x0044`), Line 2 is decoded from bytes 43-58 (V/I/P/E).
 
 For other V5 layouts, the integration still includes fallback decoding for bytes 25-36 when those values are plausible.
 
@@ -303,9 +304,16 @@ def decode_v5_packet(data: bytes) -> dict:
         'power': power,
     }
 
-    # Energy (bytes 21-24)
+    # Energy (L1, bytes 21-24)
     if len(data) >= 25:
         result['energy'] = struct.unpack('>I', data[21:25])[0] / 10000
+
+    # Dual-block 50A packets include Line 2 at bytes 43-58.
+    if len(data) >= 59 and data[7:9] == b'\x00\x44':
+        result['line_2_voltage'] = struct.unpack('>I', data[43:47])[0] / 10000
+        result['line_2_current'] = struct.unpack('>I', data[47:51])[0] / 10000
+        result['line_2_power'] = struct.unpack('>I', data[51:55])[0] / 10000
+        result['line_2_energy'] = struct.unpack('>I', data[55:59])[0] / 10000
 
     return result
 ```
@@ -329,7 +337,7 @@ def decode_v5_packet(data: bytes) -> dict:
 | Byte 4 | Always `0x01` - purpose unknown |
 | Bytes 7-8 | Packet length field (`0x0022` single-block, `0x0044` dual-block observed) |
 | Bytes 25-36 on single-phase devices | Values present but not voltage/current/power for these devices |
-| Bytes 25-36 on dual-phase devices | Used as fallback only; primary validated L2 offsets for tested 50A devices are 43-54 in dual-block packets |
+| Bytes 25-36 on dual-phase devices | Used as fallback only; primary validated L2 offsets for tested 50A devices are 43-58 in dual-block packets |
 | Bytes 37-40 | Value ~6000, likely frequency (60.00 Hz) but unconfirmed |
 | Bytes 41-42 | Value 0 in all captures, likely error code but mapping unknown |
 | Error code mapping | Gen 2 may use the same codes as Gen 1 (0-7) or different codes |
